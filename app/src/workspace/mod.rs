@@ -740,6 +740,14 @@ pub fn init(app: &mut AppContext) {
         .with_custom_action(CustomAction::NewTerminalTab)
         .with_enabled(|| ContextFlag::CreateNewSession.is_enabled()),
         EditableBinding::new(
+            "workspace:new_local_agent_tab",
+            BindingDescription::new("New local agent tab"),
+            WorkspaceAction::AddLocalAgentTab,
+        )
+        .with_group(bindings::BindingGroup::WarpAi.as_str())
+        .with_context_predicate(id!("Workspace") & !id!("Workspace_PaneDragging"))
+        .with_enabled(|| cfg!(feature = "local_tty") && ContextFlag::CreateNewSession.is_enabled()),
+        EditableBinding::new(
             NEW_AGENT_TAB_BINDING_NAME,
             BindingDescription::new("New Agent Tab"),
             WorkspaceAction::AddAgentTab,

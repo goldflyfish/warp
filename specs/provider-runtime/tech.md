@@ -71,6 +71,38 @@ Final formatting passed for both modified packages using the repository's import
 configuration, followed by `git diff --check`. Tests and lint were not rerun after formatting,
 as specified by `AGENTS.md`.
 
+## Desktop local runtime launcher
+
+`LocalAgentRuntime` in `app/src/settings/ai.rs` identifies the three supported local CLI
+runtimes. `AISettings.local_agent_runtime` persists the selection at
+`agents.third_party.local_agent_runtime`, with `SyncToCloud::Never`. The default is OpenCode.
+This preference applies to **New local agent tab**, not the existing Warp Agent tab action.
+
+`CLIAgentsPageView` exposes a dropdown, a launch action, and runtime-specific setup guidance.
+Runtime and provider-connection rows are separate searchable widgets, with a page-level title.
+Local-launch widgets are only constructed for builds with `local_tty`.
+
+`WorkspaceAction::AddLocalAgentTab` is registered in the command palette and new-session menu.
+It creates a new terminal with `DefaultSessionModeBehavior::Ignore` and uses the existing
+pending-command queue, so the bare `opencode`, `codex`, or `claude` command is submitted after
+shell bootstrap. No prompts, credentials, interpolated arguments, or permission-bypass switches
+are added. Missing CLIs fail visibly in the terminal; the action does not fall back to Warp.
+
+The desktop launcher uses each CLI's own attended permission UI. It does not route through
+the unattended ACP driver. Native rendering through ACP remains experimental as described above.
+
+Desktop-launcher validation on Windows:
+
+- `cargo test --locked -p warp --lib local_agent_ -- --nocapture`: 54 passed, 0 failed.
+- `cargo test --locked -p warp --lib test_unified_new_session_menu`: 2 passed, 0 failed.
+- `cargo clippy --locked -p warp --all-targets --tests -- -D warnings`: passed.
+
+The new tests cover runtime-dependent pending commands in fresh tabs, preservation of existing
+input, launcher availability with Warp AI disabled, a machine-local preference, and settings
+search isolation with its page title retained. They use WarpUI's in-process test harness and
+mocked terminal resources. A live desktop shell launch, visual layout, and authenticated
+provider sessions still require end-to-end verification.
+
 ## Next integration boundary
 
 Add a provider/runtime selection model above `HarnessKind` without making model-provider names

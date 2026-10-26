@@ -45,6 +45,27 @@ This is an integration milestone. The ordinary desktop default is still Warp Age
 provider settings screen, default-runtime preference, and an end-to-end desktop verification
 are still required before describing the fork as a replacement for Warp Agent.
 
+## Desktop local runtime launcher
+
+The desktop now has a separate **New local agent tab** command and a new-tab menu entry.
+In **Settings > Agents > Third party CLI agents**, select OpenCode, Codex, or Claude Code.
+OpenCode is the initial local preference; the choice is saved only on this computer.
+
+The action opens a fresh terminal tab, inherits the ordinary new-tab working-directory rules,
+waits for shell startup, and starts the chosen interactive CLI. It does not reuse the active
+terminal's input or send a prompt to Warp's inference service. It remains available when Warp
+AI is disabled. The existing Warp Agent and cloud session actions keep their existing meaning.
+
+The runtime must already be installed in the selected shell. The settings page links to its
+official setup guide and explains login/API-key support. Authentication, provider selection,
+and permission prompts happen in the runtime's own UI. The launcher does not copy credentials,
+edit global provider configuration, pass auto-approval flags, or silently select another agent.
+
+This makes the runtimes accessible from the desktop, but it is an interactive terminal route.
+The native ACP conversation bridge remains a separate integration. A native provider/model
+selector, attended ACP approvals, connection status, and packaging are still needed for the
+finished replacement experience.
+
 ## Required behavior for the finished product
 
 1. A user can select a runtime and discover its models without editing source code.
@@ -63,7 +84,8 @@ are still required before describing the fork as a replacement for Warp Agent.
 
 ## Work still required
 
-- Add the runtime/provider/model selector to normal desktop conversations and save a default.
+- Add the runtime/provider/model selector to native desktop conversations and save a native default.
+  The separate local terminal launcher already saves its preferred runtime.
 - Add connection status, setup instructions, and supported login/API-key actions for each runtime.
 - Replace the unattended ACP permission behavior with an attended approval flow for ordinary
   desktop conversations. The upstream ACP driver currently auto-approves requests unless its

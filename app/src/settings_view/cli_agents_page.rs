@@ -4,6 +4,10 @@
 //! Codex, Gemini CLI) rather than Warp's own AI, so its settings are always
 //! interactive regardless of the global AI toggle.
 
+#[cfg(test)]
+#[path = "cli_agents_page_tests.rs"]
+mod tests;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -19,6 +23,7 @@ use warpui::elements::{
     ParentElement, Radius, Shrinkable,
 };
 use warpui::keymap::ContextPredicate;
+use warpui::ui_components::button::ButtonVariant;
 use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
 use warpui::ui_components::switch::SwitchStateHandle;
 use warpui::{
@@ -32,7 +37,7 @@ use super::ai_shared::{
 use super::settings_page::{
     AdditionalInfo, CONTENT_FONT_SIZE, LocalOnlyIconState, MatchData, PageTitle, PageType,
     SettingsPageMeta, SettingsPageViewHandle, SettingsWidget, ToggleState, build_toggle_element,
-    render_body_item_label,
+    render_body_item, render_body_item_label,
 };
 use super::{SettingsAction, SettingsSection, ToggleSettingActionPair, flags};
 use crate::ai::blocklist::agent_view::agent_input_footer::editor::{
@@ -42,19 +47,23 @@ use crate::appearance::Appearance;
 use crate::menu::{MenuItem, MenuItemFields};
 use crate::settings::{
     AISettings, AISettingsChangedEvent, AutoDismissRichInputAfterSubmit,
-    AutoOpenRichInputOnCLIAgentStart, AutoToggleRichInput, ShouldRenderCLIAgentToolbar,
-    SubmitRichInputOnCtrlEnter,
+    AutoOpenRichInputOnCLIAgentStart, AutoToggleRichInput, LocalAgentRuntime,
+    PreferredLocalAgentRuntime, ShouldRenderCLIAgentToolbar, SubmitRichInputOnCtrlEnter,
 };
 use crate::terminal::CLIAgent;
 use crate::util::bindings;
 use crate::view_components::dropdown::DropdownAction;
-use crate::view_components::{Dropdown, SubmittableTextInput, SubmittableTextInputEvent};
+use crate::view_components::{
+    Dropdown, DropdownItem, SubmittableTextInput, SubmittableTextInputEvent,
+};
+use crate::workspace::WorkspaceAction;
 use crate::{TelemetryEvent, send_telemetry_from_ctx};
 
 const PAGE_TITLE: &str = "Third party CLI agents";
 
 pub struct CLIAgentsPageView {
     page: PageType<Self>,
+    local_runtime_dropdown: ViewHandle<Dropdown<CLIAgentsPageAction>>,
     local_only_icon_tooltip_states: RefCell<HashMap<String, MouseStateHandle>>,
     cli_agent_footer_command_editor: ViewHandle<SubmittableTextInput>,
     cli_agent_footer_command_mouse_state_handles: Vec<MouseStateHandle>,
@@ -64,6 +73,8 @@ pub struct CLIAgentsPageView {
 
 impl CLIAgentsPageView {
     pub fn new(ctx: &mut ViewContext<Self>) -> Self {
+        let local_runtime_dropdown = ctx.add_typed_action_view(Dropdown::new);
+        Self::update_local_runtime_dropdown(&local_runtime_dropdown, ctx);
         let cli_agent_footer_command_editor = ctx.add_typed_action_view(|ctx| {
             let mut input =
                 SubmittableTextInput::new(ctx).validate_on_edit(|s| Regex::new(s).is_ok());
@@ -99,6 +110,12 @@ impl CLIAgentsPageView {
         });
 
         ctx.subscribe_to_model(&AISettings::handle(ctx), |me, _, event, ctx| {
+            if matches!(
+                event,
+                AISettingsChangedEvent::PreferredLocalAgentRuntime { .. }
+            ) {
+                Self::update_local_runtime_dropdown(&me.local_runtime_dropdown, ctx);
+            }
             // Adding or removing a command changes the length of the command
             // list, so both the per-row mouse states and the per-row agent
             // dropdowns have to be rebuilt to stay index-aligned with it.
@@ -116,6 +133,7 @@ impl CLIAgentsPageView {
 
         Self {
             page: Self::build_page(),
+            local_runtime_dropdown,
             local_only_icon_tooltip_states: Default::default(),
             cli_agent_footer_command_editor,
             cli_agent_footer_command_mouse_state_handles,
@@ -125,16 +143,45 @@ impl CLIAgentsPageView {
     }
 
     fn build_page() -> PageType<Self> {
-        let widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![
-            Box::new(CLIAgentWidget::default()),
+        let mut widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = Vec::new();
+        if cfg!(feature = "local_tty") {
+            widgets.push(Box::new(LocalAgentRuntimeWidget::default()));
+            widgets.push(Box::new(LocalAgentConnectionWidget::default()));
+        }
+        widgets.extend(vec![
+            Box::new(CLIAgentWidget::default()) as Box<dyn SettingsWidget<View = Self>>,
             Box::new(CLIAgentAutoToggleRichInputWidget::default()),
             Box::new(CLIAgentAutoOpenRichInputWidget::default()),
             Box::new(CLIAgentAutoDismissRichInputWidget::default()),
             Box::new(CLIAgentSubmitRichInputWidget::default()),
             Box::new(CLIAgentCommandsWidget),
             Box::new(CLIAgentToolbarLayoutWidget),
-        ];
+        ]);
+
         PageType::new_uncategorized(widgets, Some(PageTitle::new(PAGE_TITLE)))
+    }
+
+    fn update_local_runtime_dropdown(
+        dropdown: &ViewHandle<Dropdown<CLIAgentsPageAction>>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let selected = *AISettings::as_ref(ctx).local_agent_runtime.value();
+        dropdown.update(ctx, |dropdown, ctx| {
+            dropdown.set_top_bar_max_width(280.);
+            dropdown.set_items(
+                LocalAgentRuntime::ALL
+                    .into_iter()
+                    .map(|runtime| {
+                        DropdownItem::new(
+                            runtime.display_name(),
+                            CLIAgentsPageAction::SetLocalRuntime(runtime),
+                        )
+                    })
+                    .collect(),
+                ctx,
+            );
+            dropdown.set_selected_by_action(CLIAgentsPageAction::SetLocalRuntime(selected), ctx);
+        });
     }
 
     fn create_cli_agent_dropdowns(
@@ -233,6 +280,9 @@ pub enum CLIAgentsPageEvent {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CLIAgentsPageAction {
+    SetLocalRuntime(LocalAgentRuntime),
+    LaunchLocalRuntime,
+    OpenLocalRuntimeSetup,
     ToggleCLIAgentToolbar,
     ToggleAutoToggleRichInput,
     ToggleAutoOpenRichInputOnCLIAgentStart,
@@ -250,6 +300,19 @@ impl TypedActionView for CLIAgentsPageView {
 
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         match action {
+            CLIAgentsPageAction::SetLocalRuntime(runtime) => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.local_agent_runtime.set_value(*runtime, ctx));
+                });
+                ctx.notify();
+            }
+            CLIAgentsPageAction::LaunchLocalRuntime => {
+                ctx.dispatch_typed_action(&WorkspaceAction::AddLocalAgentTab);
+            }
+            CLIAgentsPageAction::OpenLocalRuntimeSetup => {
+                let runtime = *AISettings::as_ref(ctx).local_agent_runtime.value();
+                ctx.open_url(runtime.setup_url());
+            }
             CLIAgentsPageAction::ToggleCLIAgentToolbar => {
                 match AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     settings
@@ -406,6 +469,95 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
 #[cfg(not(target_family = "wasm"))]
 pub fn cli_agent_settings_widget_id() -> &'static str {
     CLIAgentWidget::static_widget_id()
+}
+
+#[derive(Default)]
+struct LocalAgentRuntimeWidget {
+    launch_button: MouseStateHandle,
+}
+
+impl SettingsWidget for LocalAgentRuntimeWidget {
+    type View = CLIAgentsPageView;
+
+    fn search_terms(&self) -> &str {
+        "third party cli coding agent local runtime default preferred launch opencode codex claude"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let launch = appearance
+            .ui_builder()
+            .button(ButtonVariant::Secondary, self.launch_button.clone())
+            .with_text_label("New local agent tab".to_owned())
+            .build()
+            .on_click(|ctx, _, _| {
+                ctx.dispatch_typed_action(CLIAgentsPageAction::LaunchLocalRuntime)
+            })
+            .finish();
+        let controls = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(ChildView::new(&view.local_runtime_dropdown).finish())
+            .with_child(Container::new(launch).with_margin_left(8.).finish())
+            .finish();
+        render_body_item::<CLIAgentsPageAction>(
+            "Local agent runtime".into(),
+            None,
+            LocalOnlyIconState::for_setting(
+                PreferredLocalAgentRuntime::storage_key(),
+                PreferredLocalAgentRuntime::sync_to_cloud(),
+                &mut view.local_only_icon_tooltip_states.borrow_mut(),
+                app,
+            ),
+            ToggleState::Enabled,
+            appearance,
+            controls,
+            Some("Open an interactive agent in a new terminal tab. The runtime must be installed in your shell. This choice is saved on this computer.".to_owned()),
+        )
+    }
+}
+
+#[derive(Default)]
+struct LocalAgentConnectionWidget {
+    setup_button: MouseStateHandle,
+}
+
+impl SettingsWidget for LocalAgentConnectionWidget {
+    type View = CLIAgentsPageView;
+
+    fn search_terms(&self) -> &str {
+        "third party cli coding agent local provider connection authentication login api key openai anthropic zai z.ai setup models"
+    }
+
+    fn render(
+        &self,
+        _: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let runtime = *AISettings::as_ref(app).local_agent_runtime.value();
+        let setup = appearance
+            .ui_builder()
+            .button(ButtonVariant::Secondary, self.setup_button.clone())
+            .with_text_label("Setup instructions".to_owned())
+            .build()
+            .on_click(|ctx, _, _| {
+                ctx.dispatch_typed_action(CLIAgentsPageAction::OpenLocalRuntimeSetup)
+            })
+            .finish();
+        render_body_item::<CLIAgentsPageAction>(
+            "Provider connection".into(),
+            None,
+            LocalOnlyIconState::Hidden,
+            ToggleState::Enabled,
+            appearance,
+            setup,
+            Some(runtime.connection_description().to_owned()),
+        )
+    }
 }
 
 #[derive(Default)]

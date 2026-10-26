@@ -4939,6 +4939,31 @@ impl Workspace {
         });
     }
 
+    fn add_local_agent_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        if !cfg!(feature = "local_tty") || !ContextFlag::CreateNewSession.is_enabled() {
+            return;
+        }
+        let runtime = *AISettings::as_ref(ctx).local_agent_runtime.value();
+        self.current_workspace_state.close_all_modals();
+        self.add_new_session_tab_internal_with_default_session_mode_behavior(
+            NewSessionSource::Tab,
+            Some(ctx.window_id()),
+            None,
+            None,
+            true,
+            DefaultSessionModeBehavior::Ignore,
+            ctx,
+        );
+        self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
+            if let Some(terminal_view) = pane_group.active_session_view(ctx) {
+                terminal_view.update(ctx, |view, ctx| {
+                    view.set_pending_command_queue(vec![runtime.launch_command().to_owned()], ctx);
+                });
+            }
+        });
+        ctx.notify();
+    }
+
     /// Add a new terminal tab and enter the agent view with a new conversation.
     fn add_terminal_tab_with_new_agent_view(&mut self, ctx: &mut ViewContext<Self>) {
         let was_left_panel_open = self.active_tab_pane_group().as_ref(ctx).left_panel_open;
@@ -6957,7 +6982,7 @@ impl Workspace {
     /// Builds the unified new-session menu items
     /// tab bar chevron and the vertical tab bar `+` button.
     ///
-    /// Order: Agent → Terminal (sidecar) → Cloud Agent → [tab configs] → separator → New worktree config (sidecar) → New tab config → separator → Reopen closed session.
+    /// Order: Local agent → Agent → Terminal → Cloud Agent → tab configs and session actions.
     fn unified_new_session_menu_items(
         &self,
         ctx: &mut ViewContext<Self>,
@@ -6971,6 +6996,16 @@ impl Workspace {
         let shortcut_label = keybinding_name_to_display_string(NEW_TAB_BINDING_NAME, ctx);
         let reopen_closed_session_shortcut_label =
             keybinding_name_to_display_string("app:reopen_closed_session", ctx);
+
+        if cfg!(feature = "local_tty") && ContextFlag::CreateNewSession.is_enabled() {
+            let runtime = *ai_settings.local_agent_runtime.value();
+            menu_items.push(
+                MenuItemFields::new(format!("Local agent: {}", runtime.display_name()))
+                    .with_on_select_action(WorkspaceAction::AddLocalAgentTab)
+                    .with_icon(icons::Icon::Terminal)
+                    .into_item(),
+            );
+        }
 
         // 1. Agent (if AI enabled)
         if is_any_ai_enabled {
@@ -24399,6 +24434,7 @@ impl TypedActionView for Workspace {
             AddGetStartedTab => self.add_get_started_tab(ctx),
             AddAmbientAgentTab => self.add_ambient_agent_tab(ctx),
             AddAgentTab => self.add_terminal_tab_with_new_agent_view(ctx),
+            AddLocalAgentTab => self.add_local_agent_tab(ctx),
             AddDockerSandboxTab => self.add_docker_sandbox_tab(ctx),
             StartAgentOnboardingTutorial(tutorial) => {
                 self.start_agent_onboarding_tutorial(tutorial.clone(), ctx)

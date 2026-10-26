@@ -478,6 +478,69 @@ pub const VOICE_INPUT_LANGUAGES: &[(&str, &str)] = &[
     ("zu", "Zulu"),
 ];
 
+/// Runtime launched by the local agent tab action. Credentials stay with the runtime.
+#[derive(
+    Default,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Copy,
+    Clone,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalAgentRuntime {
+    #[default]
+    OpenCode,
+    Codex,
+    ClaudeCode,
+}
+
+impl LocalAgentRuntime {
+    pub const ALL: [Self; 3] = [Self::OpenCode, Self::Codex, Self::ClaudeCode];
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::OpenCode => "OpenCode (multiple providers)",
+            Self::Codex => "Codex",
+            Self::ClaudeCode => "Claude Code",
+        }
+    }
+
+    pub fn launch_command(self) -> &'static str {
+        match self {
+            Self::OpenCode => "opencode",
+            Self::Codex => "codex",
+            Self::ClaudeCode => "claude",
+        }
+    }
+
+    pub fn setup_url(self) -> &'static str {
+        match self {
+            Self::OpenCode => "https://opencode.ai/docs/providers/",
+            Self::Codex => "https://developers.openai.com/codex/auth/",
+            Self::ClaudeCode => "https://code.claude.com/docs/en/setup",
+        }
+    }
+
+    pub fn connection_description(self) -> &'static str {
+        match self {
+            Self::OpenCode => {
+                "Use /connect inside OpenCode to add a provider, then /models to choose a model. OpenAI supports login or an API key; Anthropic and Z.ai use API keys."
+            }
+            Self::Codex => {
+                "Sign in to Codex with your ChatGPT account or configure your OpenAI API key in Codex. Existing Codex authentication is reused."
+            }
+            Self::ClaudeCode => {
+                "Sign in inside Claude Code or configure an Anthropic API key there. Existing Claude Code authentication is reused."
+            }
+        }
+    }
+}
+
 /// The default mode for new terminal sessions.
 #[derive(
     Default,
@@ -1913,6 +1976,17 @@ define_settings_group!(AISettings, settings: [
         private: false,
         toml_path: "agents.warp_agent.other.should_render_use_agent_toolbar_for_user_commands",
         description: "Whether to show the \"Use Agent\" footer for terminal commands.",
+    }
+
+    local_agent_runtime: PreferredLocalAgentRuntime {
+        type: LocalAgentRuntime,
+        default: LocalAgentRuntime::OpenCode,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.third_party.local_agent_runtime",
+        description: "The runtime to launch in a new local agent tab. Authentication is managed by the runtime.",
     }
 
     // Whether to render the CLI agent footer for commands like Claude, Codex, Gemini, etc.
