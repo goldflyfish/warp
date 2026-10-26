@@ -93,7 +93,14 @@ fn match_data_countable_zero_is_not_truthy() {
 
 #[test]
 fn subpage_display_names_are_correct() {
-    assert_eq!(SettingsSection::WarpAgent.to_string(), "Warp Agent");
+    assert_eq!(
+        SettingsSection::WarpAgent.to_string(),
+        if warp_core::mywarp::enabled() {
+            "AI providers"
+        } else {
+            "Warp Agent"
+        }
+    );
     assert_eq!(SettingsSection::AgentProfiles.to_string(), "Profiles");
     assert_eq!(SettingsSection::AgentMCPServers.to_string(), "MCP servers");
     assert_eq!(SettingsSection::Knowledge.to_string(), "Knowledge");
@@ -153,8 +160,10 @@ const ALL_SECTIONS: &[SettingsSection] = &[
 /// Sections whose user-facing Display label has deliberately diverged from the
 /// slug it was seeded from, because the slug is a stored contract that the
 /// rename must not follow.
-const SECTIONS_WITH_RENAMED_DISPLAY_LABELS: &[SettingsSection] =
-    &[SettingsSection::WarpCloudAgentAPIKeys];
+const SECTIONS_WITH_RENAMED_DISPLAY_LABELS: &[SettingsSection] = &[
+    SettingsSection::WarpCloudAgentAPIKeys,
+    SettingsSection::WarpAgent,
+];
 
 #[test]
 fn all_sections_list_is_exhaustive() {
@@ -232,6 +241,7 @@ fn slugs_were_seeded_from_the_display_labels_they_replaced() {
 
 #[test]
 fn renamed_sections_keep_the_slug_they_were_seeded_with() {
+    assert_eq!(SettingsSection::WarpAgent.slug(), "Warp Agent");
     // The section dropped "Oz" from what the user reads, but persisted sessions
     // and `surface.settings.open --page` still speak the original slug.
     assert_eq!(
@@ -1159,4 +1169,17 @@ fn category_header_with_trailing_element_and_no_subtitle_does_not_panic_flex_lay
             presenter.build_scene(vec2f(800., 600.), 1., None, ctx);
         });
     });
+}
+
+#[test]
+fn mywarp_settings_exclude_account_and_warp_services() {
+    assert!(!SettingsSection::Account.available_in_mywarp());
+    assert!(!SettingsSection::BillingAndUsage.available_in_mywarp());
+    assert!(!SettingsSection::WarpDrive.available_in_mywarp());
+    assert!(!SettingsSection::CloudEnvironments.available_in_mywarp());
+    assert!(!SettingsSection::Teams.available_in_mywarp());
+    assert!(!SettingsSection::Referrals.available_in_mywarp());
+    assert!(SettingsSection::WarpAgent.available_in_mywarp());
+    assert!(SettingsSection::Appearance.available_in_mywarp());
+    assert!(SettingsSection::ThirdPartyCLIAgents.available_in_mywarp());
 }

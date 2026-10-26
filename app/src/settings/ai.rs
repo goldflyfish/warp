@@ -1999,7 +1999,7 @@ define_settings_group!(AISettings, settings: [
 
     native_chat_runtime: PreferredNativeChatRuntime {
         type: NativeChatRuntime,
-        default: NativeChatRuntime::Warp,
+        default: if warp_core::mywarp::enabled() { NativeChatRuntime::OpenCode } else { NativeChatRuntime::Warp },
         supported_platforms: SupportedPlatforms::ALL,
         sync_to_cloud: SyncToCloud::Never,
         surface: settings::SettingSurfaces::GUI,
@@ -2379,6 +2379,9 @@ impl AISettings {
     }
 
     pub fn is_any_ai_enabled(&self, app: &AppContext) -> bool {
+        if warp_core::mywarp::enabled() {
+            return true;
+        }
         // Disable AI for anonymous and logged-out users.
         let is_anonymous_or_logged_out = AuthStateProvider::as_ref(app)
             .get()
@@ -2407,6 +2410,9 @@ impl AISettings {
 
     pub fn default_session_mode(&self, app: &AppContext) -> DefaultSessionMode {
         let mode = *self.default_session_mode_internal.value();
+        if warp_core::mywarp::enabled() && mode == DefaultSessionMode::CloudAgent {
+            return DefaultSessionMode::Agent;
+        }
         match mode {
             // Terminal and TabConfig don't require AI.
             DefaultSessionMode::Terminal | DefaultSessionMode::TabConfig => mode,
@@ -2454,7 +2460,8 @@ impl AISettings {
     }
 
     pub fn is_active_ai_enabled(&self, app: &warpui::AppContext) -> bool {
-        self.is_any_ai_enabled(app)
+        !warp_core::mywarp::enabled()
+            && self.is_any_ai_enabled(app)
             && *self.is_active_ai_enabled_internal
             && AppExecutionMode::as_ref(app).allows_active_ai()
     }
@@ -2490,6 +2497,7 @@ impl AISettings {
     pub fn is_voice_input_enabled(&self, app: &warpui::AppContext) -> bool {
         // Voice input is conditionally-compiled because it requires additional dependencies on some platforms.
         cfg!(feature = "voice_input")
+            && !warp_core::mywarp::enabled()
             && self.is_any_ai_enabled(app)
             && *self.voice_input_enabled_internal
     }

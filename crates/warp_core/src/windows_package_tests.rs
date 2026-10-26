@@ -142,3 +142,108 @@ fn packaged_process_paths_probe() {
     assert_eq!(crate::paths::cache_dir(), expected.join("cache"));
     assert_eq!(crate::paths::data_dir(), expected.join("data"));
 }
+
+#[test]
+fn imports_existing_provider_files_into_the_portable_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("existing config");
+    fs::create_dir_all(source.join("keys")).unwrap();
+    fs::write(source.join("keys/router.key"), "dummy-provider-key").unwrap();
+    fs::write(source.join("opencode.jsonc"), "{\n// existing configuration\n\"provider\":{\"openrouter\":{\"options\":{\"apiKey\":\"{file:./keys/router.key}\"}}}}\n").unwrap();
+    fs::write(
+        source.join("auth.json"),
+        r#"{"openai":{"type":"oauth","refresh":"dummy-token"}}"#,
+    )
+    .unwrap();
+    let profile = temp.path().join("portable profile");
+    prepare_opencode_profile(&profile).unwrap();
+
+    import_opencode_configuration(
+        &profile,
+        Some(&source.join("opencode.jsonc")),
+        &source.join("auth.json"),
+    )
+    .unwrap();
+
+    let config =
+        fs::read_to_string(profile.join("providers/config/opencode/opencode.jsonc")).unwrap();
+    assert!(config.contains("{file:./keys/imported-0.key}"));
+    assert!(!config.contains("dummy-provider-key"));
+    assert_eq!(
+        fs::read_to_string(profile.join("providers/config/opencode/keys/imported-0.key")).unwrap(),
+        "dummy-provider-key"
+    );
+    assert!(profile.join("providers/data/opencode/auth.json").is_file());
+}
+
+#[test]
+fn existing_profile_configuration_is_not_replaced_by_global_configuration() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join("profile");
+    prepare_opencode_profile(&profile).unwrap();
+    let destination = profile.join("providers/config/opencode/opencode.jsonc");
+    fs::write(&destination, r#"{"provider":{"zai":{}}}"#).unwrap();
+    let global = temp.path().join("global.json");
+    fs::write(&global, r#"{"provider":{"openrouter":{}}}"#).unwrap();
+
+    import_opencode_configuration(
+        &profile,
+        Some(&global),
+        &temp.path().join("missing-auth.json"),
+    )
+    .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(destination).unwrap(),
+        r#"{"provider":{"zai":{}}}"#
+    );
+}
+
+#[test]
+fn missing_referenced_credentials_leave_the_original_profile_unchanged() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join("profile");
+    prepare_opencode_profile(&profile).unwrap();
+    let destination = profile.join("providers/config/opencode/opencode.jsonc");
+    let original = fs::read(&destination).unwrap();
+    let global = temp.path().join("global.json");
+    fs::write(
+        &global,
+        r#"{"provider":{"openrouter":{"options":{"apiKey":"{file:./missing.key}"}}}}"#,
+    )
+    .unwrap();
+
+    assert!(
+        import_opencode_configuration(
+            &profile,
+            Some(&global),
+            &temp.path().join("missing-auth.json")
+        )
+        .is_err()
+    );
+    assert_eq!(fs::read(destination).unwrap(), original);
+}
+
+#[test]
+fn imports_provider_signins_without_overwriting_custom_profile_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join("profile");
+    prepare_opencode_profile(&profile).unwrap();
+    let config = profile.join("providers/config/opencode/opencode.jsonc");
+    fs::write(&config, r#"{"provider":{"zai":{}}}"#).unwrap();
+    let auth = temp.path().join("auth.json");
+    fs::write(
+        &auth,
+        r#"{"openai":{"type":"oauth","refresh":"dummy-token"}}"#,
+    )
+    .unwrap();
+    import_opencode_configuration(&profile, None, &auth).unwrap();
+    assert_eq!(
+        fs::read_to_string(config).unwrap(),
+        r#"{"provider":{"zai":{}}}"#
+    );
+    assert_eq!(
+        fs::read(profile.join("providers/data/opencode/auth.json")).unwrap(),
+        fs::read(auth).unwrap()
+    );
+}

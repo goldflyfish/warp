@@ -2778,9 +2778,10 @@ impl FeaturesPageView {
             vec![Box::new(DefaultSessionModeWidget::default())];
 
         let native_preference_settings = NativePreferenceSettings::as_ref(ctx);
-        if native_preference_settings
-            .user_native_redirect_preference
-            .is_supported_on_current_platform()
+        if !warp_core::mywarp::enabled()
+            && native_preference_settings
+                .user_native_redirect_preference
+                .is_supported_on_current_platform()
         {
             general_widgets.push(Box::new(NativeRedirectWidget::default()));
         }
@@ -2818,9 +2819,10 @@ impl FeaturesPageView {
         }
 
         let changelog_settings = ChangelogSettings::as_ref(ctx);
-        if changelog_settings
-            .show_changelog_after_update
-            .is_supported_on_current_platform()
+        if !warp_core::mywarp::enabled()
+            && changelog_settings
+                .show_changelog_after_update
+                .is_supported_on_current_platform()
         {
             general_widgets.push(Box::new(ShowChangelogWidget::default()));
         }

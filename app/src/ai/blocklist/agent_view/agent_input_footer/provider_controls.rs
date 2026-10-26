@@ -107,11 +107,12 @@ impl ProviderControls {
                 controller.ensure_provider_chat(id, ctx)
             });
         }
-        let selected = if state.is_some_and(|(_, _, provider)| provider) {
-            NativeChatRuntime::OpenCode
-        } else {
-            NativeChatRuntime::Warp
-        };
+        let selected =
+            if warp_core::mywarp::enabled() || state.is_some_and(|(_, _, provider)| provider) {
+                NativeChatRuntime::OpenCode
+            } else {
+                NativeChatRuntime::Warp
+            };
         self.runtime_dropdown.update(ctx, |dropdown, ctx| {
             dropdown.set_top_bar_max_width(130.);
             dropdown.set_menu_position(
@@ -119,19 +120,20 @@ impl ProviderControls {
                 ChildAnchor::BottomLeft,
                 ctx,
             );
-            dropdown.set_items(
-                vec![
+            let mut runtimes = vec![DropdownItem::new(
+                "MyWarp AI",
+                ProviderAction::Runtime(NativeChatRuntime::OpenCode),
+            )];
+            if !warp_core::mywarp::enabled() {
+                runtimes.insert(
+                    0,
                     DropdownItem::new(
                         "Warp Agent",
                         ProviderAction::Runtime(NativeChatRuntime::Warp),
                     ),
-                    DropdownItem::new(
-                        "OpenCode",
-                        ProviderAction::Runtime(NativeChatRuntime::OpenCode),
-                    ),
-                ],
-                ctx,
-            );
+                );
+            }
+            dropdown.set_items(runtimes, ctx);
             dropdown.set_selected_by_action(ProviderAction::Runtime(selected), ctx);
             if state.is_none_or(|(_, started, _)| started) {
                 dropdown.set_disabled(ctx);

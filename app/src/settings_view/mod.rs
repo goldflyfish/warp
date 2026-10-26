@@ -342,6 +342,22 @@ use std::fmt::{self, Display};
 
 use crate::util::bindings::custom_tag_to_keystroke;
 
+impl SettingsSection {
+    pub(crate) fn available_in_mywarp(self) -> bool {
+        matches!(
+            self,
+            Self::WarpAgent
+                | Self::ThirdPartyCLIAgents
+                | Self::Appearance
+                | Self::Features
+                | Self::Keybindings
+                | Self::Scripting
+                | Self::EditorAndCodeReview
+                | Self::About
+        )
+    }
+}
+
 impl Display for SettingsSection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -350,7 +366,15 @@ impl Display for SettingsSection {
             SettingsSection::SharedBlocks => write!(f, "Shared blocks"),
             SettingsSection::Scripting => write!(f, "Scripting"),
             SettingsSection::WarpDrive => write!(f, "Warp Drive"),
-            SettingsSection::WarpAgent => write!(f, "Warp Agent"),
+            SettingsSection::WarpAgent => write!(
+                f,
+                "{}",
+                if warp_core::mywarp::enabled() {
+                    "AI providers"
+                } else {
+                    "Warp Agent"
+                }
+            ),
             SettingsSection::AgentProfiles => write!(f, "Profiles"),
             SettingsSection::AgentMCPServers => write!(f, "MCP servers"),
             SettingsSection::Knowledge => write!(f, "Knowledge"),
@@ -1457,9 +1481,36 @@ impl SettingsView {
             );
         }
 
+        if warp_core::mywarp::enabled() {
+            settings_pages.retain(|page| page.section.available_in_mywarp());
+            nav_items.retain_mut(|item| match item {
+                SettingsNavItem::Page(section) => section.available_in_mywarp(),
+                SettingsNavItem::Umbrella(umbrella) => {
+                    umbrella
+                        .subpages
+                        .retain(|section| section.available_in_mywarp());
+                    umbrella
+                        .subpage_button_states
+                        .truncate(umbrella.subpages.len());
+                    !umbrella.subpages.is_empty()
+                }
+            });
+        }
+        let page = if warp_core::mywarp::enabled() {
+            Some(
+                page.filter(|section| section.available_in_mywarp())
+                    .unwrap_or(SettingsSection::WarpAgent),
+            )
+        } else {
+            page
+        };
         let initial_page = match page {
             Some(SettingsSection::Scripting) if !FeatureFlag::WarpControlCli.is_enabled() => {
-                SettingsSection::Account
+                if warp_core::mywarp::enabled() {
+                    SettingsSection::WarpAgent
+                } else {
+                    SettingsSection::Account
+                }
             }
             other => other.unwrap_or_default(),
         };
@@ -2043,6 +2094,11 @@ impl SettingsView {
         allow_steal_focus: bool,
         ctx: &mut ViewContext<Self>,
     ) {
+        let section = if warp_core::mywarp::enabled() && !section.available_in_mywarp() {
+            SettingsSection::WarpAgent
+        } else {
+            section
+        };
         // Every nav target owns its backing page. Check it exists.
         if self.settings_page(section).is_none() {
             return;

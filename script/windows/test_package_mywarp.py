@@ -51,7 +51,7 @@ class PackagingTests(unittest.TestCase):
         self.opencode = write_pe(self.root / 'opencode/bin/opencode.exe')
         (self.opencode.parent.parent / 'LICENSE').write_text('fixture OpenCode license')
         self.output = self.root / 'output files'
-        self.arguments = ['--repo', str(self.repo), '--skip-build', '--binary', str(self.binary), '--resources-dir', str(self.resources), '--opencode', str(self.opencode), '--output-dir', str(self.output), '--arch', 'x64']
+        self.arguments = ['--repo', str(self.repo), '--version', '0.1.0', '--skip-build', '--binary', str(self.binary), '--resources-dir', str(self.resources), '--opencode', str(self.opencode), '--output-dir', str(self.output), '--arch', 'x64']
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -172,7 +172,7 @@ class PackagingTests(unittest.TestCase):
             configure(args)
 
     def test_default_mode_invokes_compilation_and_prepares_real_build_resources(self):
-        arguments = ['--repo', str(self.repo), '--opencode', str(self.opencode), '--output-dir', str(self.output), '--plain']
+        arguments = ['--repo', str(self.repo), '--version', '0.1.0', '--opencode', str(self.opencode), '--output-dir', str(self.output), '--plain']
         def resources(args, binary, destination):
             self.assertFalse(args.skip_build)
             self.assertEqual(binary.name, 'MyWarp.exe')

@@ -384,6 +384,7 @@ async fn run(
     #[cfg(windows)]
     if let Some(profile) = warp_core::windows_package::profile_dir() {
         warp_core::windows_package::prepare_opencode_profile(profile)?;
+        warp_core::windows_package::import_existing_opencode_profile(profile)?;
         process.envs(warp_core::windows_package::opencode_environment(profile));
     }
     process

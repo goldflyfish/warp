@@ -1968,6 +1968,9 @@ pub(crate) fn initialize_app(
     // Rewrite recognized Warp web URLs (sessions, Drive, settings, home) into local
     // intent URLs when possible so they open directly in the desktop app.
     ctx.set_before_open_url(|url_str, _ctx| {
+        if Url::parse(url_str).is_ok_and(|url| warp_core::mywarp::blocks_url(&url)) {
+            return "about:blank".to_owned();
+        }
         if let Ok(url) = Url::parse(url_str)
             && let Some(intent) = maybe_rewrite_web_url_to_intent(&url)
         {

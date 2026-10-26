@@ -260,11 +260,14 @@ impl TerminalView {
         })?;
 
         #[cfg(not(target_family = "wasm"))]
-        if use_provider_default {
+        if use_provider_default || warp_core::mywarp::enabled() {
             use settings::Setting as _;
 
             use crate::settings::{AISettings, NativeChatRuntime};
-            if *AISettings::as_ref(ctx).native_chat_runtime.value() == NativeChatRuntime::OpenCode {
+            if warp_core::mywarp::enabled()
+                || *AISettings::as_ref(ctx).native_chat_runtime.value()
+                    == NativeChatRuntime::OpenCode
+            {
                 self.ai_controller.update(ctx, |controller, ctx| {
                     if let Err(error) = controller.configure_provider_chat(
                         conversation_id,

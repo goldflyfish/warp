@@ -543,5 +543,56 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::AcpHarness,
     ]);
 
+    if warp_core::mywarp::enabled() {
+        flags.retain(|flag| !MYWARP_DISABLED_FEATURES.contains(flag));
+    }
     flags
 }
+
+const MYWARP_DISABLED_FEATURES: &[FeatureFlag] = &[
+    FeatureFlag::Autoupdate,
+    FeatureFlag::Changelog,
+    FeatureFlag::CrashReporting,
+    FeatureFlag::CocoaSentry,
+    FeatureFlag::LogExpensiveFramesInSentry,
+    FeatureFlag::AgentModeAnalytics,
+    FeatureFlag::GlobalAIAnalyticsBanner,
+    FeatureFlag::GlobalAIAnalyticsCollection,
+    FeatureFlag::RecordAppActiveEvents,
+    FeatureFlag::CreatingSharedSessions,
+    FeatureFlag::ViewingSharedSessions,
+    FeatureFlag::SessionSharingAcls,
+    FeatureFlag::AgentSharedSessions,
+    FeatureFlag::CloudObjects,
+    FeatureFlag::CloudEnvironments,
+    FeatureFlag::CloudMode,
+    FeatureFlag::CloudModeFromLocalSession,
+    FeatureFlag::CloudModeHostSelector,
+    FeatureFlag::CloudModeSetupV2,
+    FeatureFlag::CloudModeInputV2,
+    FeatureFlag::CloudAgentRunners,
+    FeatureFlag::CloudAgentExecutionConfig,
+    FeatureFlag::CloudRunners,
+    FeatureFlag::OzLaunchModal,
+    FeatureFlag::OzHandoff,
+    FeatureFlag::HandoffLocalCloud,
+    FeatureFlag::HandoffCloudCloud,
+    FeatureFlag::HOARemoteControl,
+    FeatureFlag::FactoryMcp,
+    FeatureFlag::AccountFirstOnboarding,
+    FeatureFlag::AgentOnboarding,
+    FeatureFlag::ForceLogin,
+    FeatureFlag::HOAOnboardingFlow,
+    FeatureFlag::WelcomeBlock,
+    FeatureFlag::WelcomeTips,
+    FeatureFlag::ChatGPTSubscription,
+    FeatureFlag::GeminiEnterprise,
+    FeatureFlag::SuperGrok,
+    FeatureFlag::BillingAndUsagePageV2,
+    FeatureFlag::FetchGenericStringObjects,
+    FeatureFlag::RemoteCodebaseIndexing,
+];
+
+#[cfg(test)]
+#[path = "features_tests.rs"]
+mod tests;

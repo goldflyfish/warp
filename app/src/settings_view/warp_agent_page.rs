@@ -2286,6 +2286,9 @@ impl WarpAgentPageView {
     }
 
     fn build_page(ctx: &mut ViewContext<Self>) -> PageType<Self> {
+        if warp_core::mywarp::enabled() {
+            return mywarp_provider_page();
+        }
         let ai_settings = AISettings::as_ref(ctx);
 
         let mut categories: Vec<Category<Self>> = Vec::new();
@@ -2571,6 +2574,8 @@ pub enum WarpAgentPageAction {
     RefreshGeminiEnterpriseCredentials,
     ToggleGeminiEnterpriseCredentialsEnabled,
     ToggleCloudAgentComputerUse,
+    OpenProviderConfiguration,
+    OpenProviderConnection,
     ToggleFileBasedMcp,
     ToggleIncludeAgentCommandsInHistory,
     ToggleAutoApproveBypassesCommandDenylist,
@@ -2977,6 +2982,31 @@ impl TypedActionView for WarpAgentPageView {
                     );
                 });
                 ctx.notify();
+            }
+            WarpAgentPageAction::OpenProviderConnection => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(
+                        settings
+                            .local_agent_runtime
+                            .set_value(crate::settings::LocalAgentRuntime::OpenCode, ctx)
+                    );
+                });
+                ctx.dispatch_typed_action(&crate::workspace::WorkspaceAction::AddLocalAgentTab);
+            }
+            WarpAgentPageAction::OpenProviderConfiguration => {
+                #[cfg(windows)]
+                if let Some(profile) = warp_core::windows_package::profile_dir() {
+                    if let Err(error) =
+                        warp_core::windows_package::import_existing_opencode_profile(profile)
+                    {
+                        log::error!("Could not import AI provider settings: {error}");
+                    }
+                    if let Ok(url) = url::Url::from_file_path(
+                        profile.join("providers/config/opencode/opencode.jsonc"),
+                    ) {
+                        ctx.open_url(url.as_str());
+                    }
+                }
             }
             WarpAgentPageAction::SignupAnonymousUser => {
                 ctx.emit(WarpAgentPageEvent::SignupAnonymousUser);
@@ -6913,4 +6943,67 @@ impl SettingsWidget for CustomModelRoutersWidget {
             .with_margin_bottom(HEADER_PADDING)
             .finish()
     }
+}
+
+#[derive(Default)]
+struct ProviderConnectionWidget {
+    button: MouseStateHandle,
+}
+
+impl SettingsWidget for ProviderConnectionWidget {
+    type View = WarpAgentPageView;
+    fn search_terms(&self) -> &str {
+        "AI provider connect login API key OpenRouter OpenAI Codex Claude Z.ai"
+    }
+    fn render(
+        &self,
+        _view: &Self::View,
+        appearance: &Appearance,
+        _app: &AppContext,
+    ) -> Box<dyn Element> {
+        Flex::column()
+            .with_child(appearance.ui_builder().span("Use your own AI provider").build().finish())
+            .with_child(appearance.ui_builder().span("MyWarp uses your configured provider through OpenCode. Existing configuration and provider sign-ins are imported into this profile on first use. No MyWarp account is needed.").with_soft_wrap().build().with_margin_top(8.).with_margin_bottom(12.).finish())
+            .with_child(appearance.ui_builder().button(ButtonVariant::Secondary, self.button.clone())
+                .with_text_label("Open provider setup".to_owned())
+                .build().on_click(|ctx, _, _| ctx.dispatch_typed_action(WarpAgentPageAction::OpenProviderConnection)).finish())
+            .finish()
+    }
+}
+
+#[derive(Default)]
+struct ProviderConfigurationWidget {
+    button: MouseStateHandle,
+}
+
+impl SettingsWidget for ProviderConfigurationWidget {
+    type View = WarpAgentPageView;
+    fn search_terms(&self) -> &str {
+        "AI provider configuration settings file opencode json API key"
+    }
+    fn render(
+        &self,
+        _view: &Self::View,
+        appearance: &Appearance,
+        _app: &AppContext,
+    ) -> Box<dyn Element> {
+        Flex::column()
+            .with_child(appearance.ui_builder().span("Provider configuration").build().finish())
+            .with_child(appearance.ui_builder().span("Select any connected model in the chat footer. API keys, saved sign-ins and provider settings stay in your MyWarp profile. Use /connect in provider setup to add another provider.").with_soft_wrap().build().with_margin_top(8.).with_margin_bottom(12.).finish())
+            .with_child(appearance.ui_builder().button(ButtonVariant::Secondary, self.button.clone())
+                .with_text_label("Open configuration file".to_owned())
+                .build().on_click(|ctx, _, _| ctx.dispatch_typed_action(WarpAgentPageAction::OpenProviderConfiguration)).finish())
+            .finish()
+    }
+}
+
+fn mywarp_provider_page() -> PageType<WarpAgentPageView> {
+    PageType::new_uncategorized(
+        vec![
+            Box::new(ProviderConnectionWidget::default()),
+            Box::new(ProviderConfigurationWidget::default()),
+            Box::new(IncludeAgentCommandsInHistoryWidget::default()),
+        ],
+        Some(PageTitle::new("AI providers")),
+    )
 }

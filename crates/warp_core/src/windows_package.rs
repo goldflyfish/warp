@@ -103,6 +103,81 @@ pub fn prepare_opencode_profile(profile: &Path) -> Result<()> {
     }
 }
 
+pub fn import_existing_opencode_profile(profile: &Path) -> Result<()> {
+    let Some(base) = BaseDirs::new() else {
+        return Ok(());
+    };
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| base.home_dir().join(".config"));
+    let config = std::env::var_os("OPENCODE_CONFIG")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            ["opencode.jsonc", "opencode.json"]
+                .into_iter()
+                .map(|name| config_home.join("opencode").join(name))
+                .find(|path| path.is_file())
+        });
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| base.home_dir().join(".local/share"));
+    import_opencode_configuration(
+        profile,
+        config.as_deref(),
+        &data_home.join("opencode/auth.json"),
+    )
+}
+
+fn import_opencode_configuration(profile: &Path, source: Option<&Path>, auth: &Path) -> Result<()> {
+    let config_dir = profile.join("providers/config/opencode");
+    let destination = config_dir.join("opencode.jsonc");
+    let auth_destination = profile.join("providers/data/opencode/auth.json");
+    if auth.is_file() && !auth_destination.exists() {
+        fs::create_dir_all(auth_destination.parent().expect("auth parent"))?;
+        fs::copy(auth, auth_destination).context("Could not import existing provider sign-ins")?;
+    }
+    let current: serde_json::Value = match serde_json::from_slice(&fs::read(&destination)?) {
+        Ok(config) => config,
+        Err(_) => return Ok(()),
+    };
+    if current
+        .as_object()
+        .is_none_or(|object| object.keys().any(|key| key != "$schema"))
+    {
+        return Ok(());
+    }
+    if let Some(source) = source.filter(|source| *source != destination) {
+        let original =
+            fs::read_to_string(source).context("Could not read existing provider configuration")?;
+        let references =
+            regex::Regex::new(r"\{file:([^}]+)\}").expect("static file-reference pattern");
+        let mut migrated = String::new();
+        let mut offset = 0;
+        for (index, capture) in references.captures_iter(&original).enumerate() {
+            let whole = capture.get(0).expect("whole match");
+            let path = PathBuf::from(&capture[1]);
+            let path = if path.is_absolute() {
+                path
+            } else {
+                source.parent().unwrap_or(Path::new(".")).join(path)
+            };
+            let relative = format!("keys/imported-{index}.key");
+            fs::create_dir_all(config_dir.join("keys"))?;
+            let content = fs::read(&path)
+                .context("Could not read a file used by the existing provider configuration")?;
+            fs::write(config_dir.join(&relative), content)?;
+            migrated.push_str(&original[offset..whole.start()]);
+            migrated.push_str(&format!("{{file:./{relative}}}"));
+            offset = whole.end();
+        }
+        migrated.push_str(&original[offset..]);
+        fs::write(&destination, migrated)
+            .context("Could not import provider configuration into the MyWarp profile")?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "windows_package_tests.rs"]
 mod tests;

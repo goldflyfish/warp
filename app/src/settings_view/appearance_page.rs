@@ -1353,13 +1353,12 @@ impl AppearanceSettingsPageView {
     }
 
     fn build_page(ctx: &mut ViewContext<Self>) -> PageType<Self> {
-        let mut categories = vec![Category::new(
-            "Themes",
-            vec![
-                Box::new(CreateCustomThemeWidget::default()),
-                Box::new(ThemeSelectWidget::default()),
-            ],
-        )];
+        let mut theme_widgets: Vec<Box<dyn SettingsWidget<View = Self>>> =
+            vec![Box::new(ThemeSelectWidget::default())];
+        if !warp_core::mywarp::enabled() {
+            theme_widgets.insert(0, Box::new(CreateCustomThemeWidget::default()));
+        }
+        let mut categories = vec![Category::new("Themes", theme_widgets)];
 
         if AppIconSettings::as_ref(ctx).is_supported_on_current_platform() {
             categories.push(Category::new(

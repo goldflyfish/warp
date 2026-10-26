@@ -182,6 +182,20 @@ impl Client {
     }
 
     pub fn from_client_builder(client_builder: reqwest::ClientBuilder) -> reqwest::Result<Self> {
+        #[cfg(not(target_family = "wasm"))]
+        let client_builder = if warp_core::mywarp::enabled() {
+            client_builder.redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if warp_core::mywarp::blocks_url(attempt.url()) {
+                    attempt.error("MyWarp does not connect to Warp services")
+                } else if attempt.previous().len() >= 10 {
+                    attempt.error("Too many redirects")
+                } else {
+                    attempt.follow()
+                }
+            }))
+        } else {
+            client_builder
+        };
         client_builder.build().map(|client| Self {
             wrapped: client,
             include_warp_headers: true,
@@ -397,6 +411,11 @@ impl Client {
             prevent_sleep_reason,
         } = request;
 
+        #[cfg(not(target_family = "wasm"))]
+        if warp_core::mywarp::blocks_url(request.url()) {
+            return Ok(Response(disabled_service_response()));
+        }
+
         if let Some(before_response_send_fn) = &self.before_request_sent {
             before_response_send_fn(&request, &serialized_payload);
         }
@@ -421,6 +440,15 @@ impl Client {
 
         Ok(Response(result))
     }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn disabled_service_response() -> reqwest::Response {
+    http::Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .body("Warp services are disabled in MyWarp. Choose your configured AI provider.")
+        .expect("static service policy response is valid")
+        .into()
 }
 
 fn is_warp_server_origin(url: &reqwest::Url) -> bool {
@@ -520,6 +548,19 @@ impl<'a> RequestBuilder<'a> {
     /// Sends the request to the endpoint, which is assumed to be a streaming server-sent-events
     /// endpoint, and returns a corresponding `EventSource`.
     pub fn eventsource(self) -> EventSourceStream {
+        #[cfg(not(target_family = "wasm"))]
+        if self
+            .wrapped
+            .try_clone()
+            .and_then(|request| request.build().ok())
+            .is_some_and(|request| warp_core::mywarp::blocks_url(request.url()))
+        {
+            return Box::pin(stream! {
+                yield Err(reqwest_eventsource::Error::InvalidStatusCode(
+                    StatusCode::FORBIDDEN, disabled_service_response()
+                ));
+            });
+        }
         cfg_if::cfg_if! {
             if #[cfg(target_family = "wasm")] {
                 let mut stream = self

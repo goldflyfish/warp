@@ -44,11 +44,27 @@ impl BlocklistAIController {
             .as_ref(ctx)
             .conversation(&id)
             .ok_or("Conversation not found")?;
-        if conversation.exchange_count() != 0 {
+        if runtime == NativeChatRuntime::OpenCode
+            && conversation
+                .provider_session()
+                .is_some_and(|session| session.runtime == "opencode")
+        {
+            self.ensure_provider_chat(id, ctx);
+            return Ok(());
+        }
+        if conversation.exchange_count() != 0
+            && !(warp_core::mywarp::enabled() && conversation.provider_session().is_none())
+        {
             return Err("Start a new conversation to change its runtime.".to_owned());
         }
         match runtime {
             NativeChatRuntime::Warp => {
+                if warp_core::mywarp::enabled() {
+                    return Err(
+                        "MyWarp uses your configured providers. Warp services are disabled."
+                            .to_owned(),
+                    );
+                }
                 self.provider_chat
                     .update(ctx, |model, ctx| model.disconnect(id, ctx));
                 history.update(ctx, |history, ctx| {
@@ -59,13 +75,6 @@ impl BlocklistAIController {
                 let shared = self.terminal_model.lock().shared_session_status().clone();
                 if shared.is_sharer() || shared.is_viewer() {
                     return Err("Native OpenCode chat is unavailable in shared sessions. Open a local tab instead.".to_owned());
-                }
-                if conversation
-                    .provider_session()
-                    .is_some_and(|session| session.runtime == "opencode")
-                {
-                    self.ensure_provider_chat(id, ctx);
-                    return Ok(());
                 }
                 let remote = matches!(
                     self.active_session.as_ref(ctx).session_type(ctx),
@@ -145,6 +154,14 @@ impl BlocklistAIController {
         is_queued_prompt: bool,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
+        if !self.has_provider_chat(id, ctx)
+            && warp_core::mywarp::enabled()
+            && let Err(error) = self.configure_provider_chat(id, NativeChatRuntime::OpenCode, ctx)
+        {
+            self.provider_chat
+                .update(ctx, |model, ctx| model.set_error(id, error, ctx));
+            return true;
+        }
         if !self.has_provider_chat(id, ctx) {
             return false;
         }

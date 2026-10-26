@@ -13,10 +13,13 @@ fn main() -> Result<()> {
     let mut state = ChannelState::new(
         Channel::Oss,
         ChannelConfig {
-            app_id: AppId::new("dev", "warp", "WarpOss"),
+            app_id: AppId::new("dev", "goldflyfish", "MyWarp"),
             logfile_name: "warp-oss.log".into(),
-            server_config: WarpServerConfig::production(),
-            oz_config: OzConfig::production(),
+            server_config: WarpServerConfig::offline(),
+            oz_config: OzConfig {
+                oz_root_url: "http://127.0.0.1:0".into(),
+                workload_audience_url: None,
+            },
             telemetry_config: None,
             crash_reporting_config: None,
             autoupdate_config: None,
@@ -40,6 +43,11 @@ fn initialize_windows_package() -> Result<()> {
             std::fs::create_dir_all(profile.join(name))?;
         }
         windows_package::prepare_opencode_profile(profile)?;
+        if !std::env::args_os().any(|arg| arg == "dump-settings-schema")
+            && let Err(error) = windows_package::import_existing_opencode_profile(profile)
+        {
+            log::warn!("Could not import existing provider settings: {error}");
+        }
         // SAFETY: This runs at the executable entry point, before Warp starts any threads.
         unsafe {
             std::env::set_var("MYWARP_PROFILE_DIR", profile);

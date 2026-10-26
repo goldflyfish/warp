@@ -123,3 +123,29 @@ fn grok_button_action_reflects_tokens_and_attempt_phase() {
         GrokSubscriptionButtonAction::Disconnect
     );
 }
+
+#[test]
+fn mywarp_provider_settings_search_filters_the_real_widgets() {
+    use super::super::settings_page::FilteredPageType;
+    warpui::App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let mut page = super::mywarp_provider_page();
+            for (query, expected) in [
+                ("OpenRouter", 1),
+                ("configuration", 1),
+                ("Sign up", 0),
+                ("", 3),
+            ] {
+                page.update_filter(query, ctx);
+                let FilteredPageType::Uncategorized { widgets, title, .. } = page.get_filtered()
+                else {
+                    panic!("expected provider settings")
+                };
+                assert_eq!(widgets.len(), expected, "query: {query}");
+                if expected > 0 {
+                    assert!(title.is_some());
+                }
+            }
+        });
+    });
+}

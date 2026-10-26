@@ -6573,7 +6573,8 @@ impl Input {
         let has_any_ai = {
             let user_workspaces = UserWorkspaces::as_ref(ctx);
             let scope = user_workspaces.team_context_for_view(ctx);
-            AIRequestUsageModel::as_ref(ctx).has_any_ai_remaining(&scope, ctx)
+            warp_core::mywarp::enabled()
+                || AIRequestUsageModel::as_ref(ctx).has_any_ai_remaining(&scope, ctx)
         };
         if !has_any_ai {
             return;
@@ -15117,7 +15118,8 @@ impl Input {
         let has_any_ai = {
             let user_workspaces = UserWorkspaces::as_ref(ctx);
             let scope = user_workspaces.team_context_for_view(ctx);
-            AIRequestUsageModel::as_ref(ctx).has_any_ai_remaining(&scope, ctx)
+            warp_core::mywarp::enabled()
+                || AIRequestUsageModel::as_ref(ctx).has_any_ai_remaining(&scope, ctx)
         };
         if !has_any_ai {
             AIRequestUsageModel::handle(ctx).update(ctx, |model, ctx| {

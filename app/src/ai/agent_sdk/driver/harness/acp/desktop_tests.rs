@@ -347,6 +347,22 @@ fn provider_chat_stream_renders_in_native_history_without_a_warp_server_identity
             assert!(!conversation.to_conversation_data().tasks.iter().flat_map(|task| &task.messages).any(|message| matches!(&message.message, Some(warp_multi_agent_api::message::Message::AgentOutput(output)) if output.text.contains("Wrong session"))));
             assert!(conversation.to_conversation_data().tasks.iter().flat_map(|task| &task.messages).any(|message| matches!(&message.message, Some(warp_multi_agent_api::message::Message::AgentOutput(output)) if output.text == "Native provider reply")));
         });
+        controller.update(&mut app, |controller, ctx| {
+            controller
+                .configure_provider_chat(id, crate::settings::NativeChatRuntime::OpenCode, ctx)
+                .unwrap();
+        });
+        BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            assert_eq!(
+                history
+                    .conversation(&id)
+                    .unwrap()
+                    .provider_session()
+                    .unwrap()
+                    .session_id,
+                saved_session().session_id
+            );
+        });
     });
 }
 

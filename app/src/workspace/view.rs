@@ -10038,6 +10038,24 @@ impl Workspace {
     }
 
     fn user_menu_items(&self, app: &AppContext) -> Vec<MenuItem<WorkspaceAction>> {
+        if warp_core::mywarp::enabled() {
+            return vec![
+                MenuItemFields::new("AI providers")
+                    .with_on_select_action(WorkspaceAction::ShowSettingsPage(
+                        SettingsSection::WarpAgent,
+                    ))
+                    .into_item(),
+                MenuItemFields::new("Settings")
+                    .with_on_select_action(WorkspaceAction::ShowSettings)
+                    .into_item(),
+                MenuItemFields::new("Keyboard shortcuts")
+                    .with_on_select_action(WorkspaceAction::ToggleKeybindingsPage)
+                    .into_item(),
+                MenuItemFields::new("Open local agent")
+                    .with_on_select_action(WorkspaceAction::AddLocalAgentTab)
+                    .into_item(),
+            ];
+        }
         let mut items = Vec::new();
         if !self.auth_state.is_anonymous_or_logged_out() {
             let name = self.auth_state.username_for_display().unwrap_or_default();
@@ -24121,7 +24139,7 @@ impl Workspace {
                 entry_focus: GlobalSearchEntryFocus::Results,
             });
         }
-        if *WarpDriveSettings::as_ref(ctx).enable_warp_drive {
+        if WarpDriveSettings::is_warp_drive_enabled(ctx) {
             views.push(ToolPanelView::WarpDrive);
         }
         views
@@ -24201,7 +24219,22 @@ impl TypedActionView for Workspace {
         use WorkspaceAction::*;
         let window_id = ctx.window_id();
 
-        if self.auth_state.is_anonymous_or_logged_out() && action.blocked_for_anonymous_user() {
+        if warp_core::mywarp::enabled()
+            && matches!(
+                action,
+                ShowUpgrade
+                    | SignupAnonymousUser
+                    | SignInAnonymousWebUser
+                    | OpenCloudAgentSetupGuide
+            )
+        {
+            return;
+        }
+
+        if !warp_core::mywarp::enabled()
+            && self.auth_state.is_anonymous_or_logged_out()
+            && action.blocked_for_anonymous_user()
+        {
             AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
                 auth_manager.attempt_login_gated_feature(
                     action.into(),

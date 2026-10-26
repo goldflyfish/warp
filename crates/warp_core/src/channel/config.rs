@@ -57,6 +57,17 @@ pub struct WarpServerConfig {
 }
 
 impl WarpServerConfig {
+    pub fn offline() -> Self {
+        Self {
+            server_root_url: "http://127.0.0.1:0".into(),
+            prewarmed_sandbox_control_url: None,
+            rtc_server_url: "ws://127.0.0.1:0/graphql/v2".into(),
+            session_sharing_server_url: None,
+            firebase_auth_api_key: "".into(),
+            iap_config: None,
+        }
+    }
+
     pub fn production() -> Self {
         Self {
             server_root_url: "https://app.warp.dev".into(),
