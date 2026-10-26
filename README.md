@@ -1,3 +1,9 @@
+> **Multi-provider fork in development.** This fork is adding a replaceable agent runtime for
+> Codex, Claude, Z.ai, and other providers. The first integration connects OpenCode over ACP;
+> the normal desktop default has not yet been replaced. See the
+> [product plan](specs/provider-runtime/product.md) and
+> [implementation notes](specs/provider-runtime/tech.md).
+
 <a href="https://www.warp.dev">
     <img width="1024" alt="Warp Agentic Development Environment product preview" src="https://github.com/user-attachments/assets/9976b2da-2edd-4604-a36c-8fd53719c6d4" />
 </a>

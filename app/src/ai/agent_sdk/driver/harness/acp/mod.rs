@@ -243,7 +243,8 @@ impl ThirdPartyHarness for AcpHarness {
             Harness::Claude => CLIAgent::Claude,
             Harness::Codex => CLIAgent::Codex,
             Harness::Gemini => CLIAgent::Gemini,
-            Harness::Pi | Harness::Oz | Harness::OpenCode | Harness::Unknown => CLIAgent::Unknown,
+            Harness::OpenCode => CLIAgent::OpenCode,
+            Harness::Pi | Harness::Oz | Harness::Unknown => CLIAgent::Unknown,
         }
     }
 

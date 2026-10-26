@@ -13,7 +13,7 @@ use warpui::{App, ModelSpawner, SingletonEntity as _};
 use super::{
     HARNESS_FAILURE_OUTPUT_TRUNCATION_MARKER, HarnessKind, HarnessPersistence, HarnessRunner,
     PersistenceOutcome, SavePoint, auth_check_command_for, harness_env_vars, harness_kind,
-    prepare_harness_failure_output, validate_cli_installed,
+    prepare_harness_failure_output, renders_natively, validate_cli_installed,
 };
 use crate::ai::agent_sdk::driver::terminal::{CommandHandle, TerminalDriver};
 use crate::ai::agent_sdk::driver::{AgentDriver, AgentDriverError, IdleTimeoutSender};
@@ -105,6 +105,22 @@ fn acp_transport_does_not_affect_the_oz_harness() {
 }
 
 #[test]
+fn opencode_uses_a_native_protocol_harness_with_the_default_transport() {
+    let harness = harness_kind(Harness::OpenCode, HarnessTransport::default()).unwrap();
+    let HarnessKind::ThirdParty(harness) = harness else {
+        panic!("OpenCode must resolve to a third-party protocol harness");
+    };
+
+    assert_eq!(harness.harness(), Harness::OpenCode);
+    assert_eq!(harness.cli_agent(), CLIAgent::OpenCode);
+    assert!(renders_natively(
+        Harness::OpenCode,
+        HarnessTransport::default()
+    ));
+    assert!(renders_natively(Harness::OpenCode, HarnessTransport::Acp));
+}
+
+#[test]
 fn claude_model_env_vars_depend_on_transport() {
     let config = HarnessModelConfig {
         model_id: "claude-fable-5-1".to_string(),
@@ -154,9 +170,8 @@ fn auth_check_command_for_oz_is_none() {
 }
 
 #[test]
-fn auth_check_command_for_unsupported_is_none() {
-    // OpenCode is mapped to HarnessKind::Unsupported and therefore has no
-    // auth check command of its own.
+fn auth_check_command_for_opencode_is_none() {
+    // OpenCode reports provider authentication failures through ACP.
     assert!(auth_check_command_for(Harness::OpenCode).is_none());
 }
 
