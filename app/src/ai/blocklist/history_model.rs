@@ -44,7 +44,7 @@ use crate::ai::artifacts::Artifact;
 use crate::ai::document::ai_document_model::AIDocumentModel;
 use crate::input_suggestions::HistoryOrder;
 use crate::persistence::ModelEvent;
-use crate::persistence::model::{AgentConversation, AgentConversationData};
+use crate::persistence::model::{AgentConversation, AgentConversationData, ProviderChatSession};
 #[cfg(feature = "local_fs")]
 use crate::persistence::{database_file_path_for_current_scope, establish_ro_connection};
 use crate::server::server_api::ServerApiProvider;
@@ -1775,6 +1775,11 @@ impl BlocklistAIHistoryModel {
         title_override: Option<&str>,
         app: &AppContext,
     ) -> Result<AIConversation, anyhow::Error> {
+        if source_conversation.provider_session().is_some() {
+            anyhow::bail!(
+                "Forking provider sessions is not supported yet; start a new provider chat instead."
+            );
+        }
         Self::validate_fork_source(source_conversation)?;
         let tasks: Vec<warp_multi_agent_api::Task> = source_conversation
             .all_tasks()
@@ -1840,6 +1845,7 @@ impl BlocklistAIHistoryModel {
             pinned: false,
             use_warp_credits_instead_of_chatgpt: source_conversation
                 .use_warp_credits_instead_of_chatgpt(),
+            provider_session: None,
         };
         let forked_conversation_id = AIConversationId::new();
         if let Err(e) = sqlite_sender.send(ModelEvent::UpdateMultiAgentConversation {
@@ -1877,6 +1883,11 @@ impl BlocklistAIHistoryModel {
         title_override: Option<&str>,
         app: &AppContext,
     ) -> Result<AIConversation, anyhow::Error> {
+        if source_conversation.provider_session().is_some() {
+            anyhow::bail!(
+                "Forking provider sessions is not supported yet; start a new provider chat instead."
+            );
+        }
         let conversation = source_conversation;
 
         let exchanges_by_task: Vec<(TaskId, Vec<&AIAgentExchange>)> =
@@ -2019,6 +2030,7 @@ impl BlocklistAIHistoryModel {
             last_event_sequence: None,
             pinned: false,
             use_warp_credits_instead_of_chatgpt: conversation.use_warp_credits_instead_of_chatgpt(),
+            provider_session: None,
         };
 
         let forked_conversation_id = AIConversationId::new();
@@ -2677,6 +2689,22 @@ impl BlocklistAIHistoryModel {
         }
     }
 
+    pub(crate) fn set_provider_session(
+        &mut self,
+        conversation_id: AIConversationId,
+        session: Option<ProviderChatSession>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if let Some(conversation) = self.conversations_by_id.get_mut(&conversation_id) {
+            conversation.set_provider_session(session);
+            conversation.write_updated_conversation_state(ctx);
+            ctx.emit(BlocklistAIHistoryEvent::UpdatedConversationMetadata {
+                terminal_surface_id: self.terminal_surface_id_for_conversation(&conversation_id),
+                conversation_id,
+            });
+        }
+    }
+
     pub fn set_driver_for_conversation(
         &mut self,
         conversation_id: AIConversationId,
@@ -3112,6 +3140,7 @@ fn merged_remote_child_placeholder_conversation_data(
         is_remote_child: placeholder.is_remote_child(),
         pinned: placeholder.is_pinned(),
 
+        provider_session: None,
         // Reset on merge.
         reverted_action_ids: None,
         root_task_is_optimistic: None,

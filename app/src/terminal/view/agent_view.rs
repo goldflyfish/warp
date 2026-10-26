@@ -243,9 +243,43 @@ impl TerminalView {
             .agent_view_state()
             .is_fullscreen();
 
+        let use_provider_default = conversation_id.is_none()
+            && matches!(
+                origin,
+                AgentViewEntryOrigin::Input { .. }
+                    | AgentViewEntryOrigin::ConversationListView
+                    | AgentViewEntryOrigin::DefaultSessionMode
+                    | AgentViewEntryOrigin::Keybinding(_)
+                    | AgentViewEntryOrigin::ClearBuffer
+                    | AgentViewEntryOrigin::ProjectEntry
+                    | AgentViewEntryOrigin::ConversationSelector
+                    | AgentViewEntryOrigin::AgentModeHomepage
+            );
         let conversation_id = self.agent_view_controller.update(ctx, |controller, ctx| {
             controller.try_enter_agent_view(conversation_id, origin.clone(), ctx)
         })?;
+
+        #[cfg(not(target_family = "wasm"))]
+        if use_provider_default {
+            use settings::Setting as _;
+
+            use crate::settings::{AISettings, NativeChatRuntime};
+            if *AISettings::as_ref(ctx).native_chat_runtime.value() == NativeChatRuntime::OpenCode {
+                self.ai_controller.update(ctx, |controller, ctx| {
+                    if let Err(error) = controller.configure_provider_chat(
+                        conversation_id,
+                        NativeChatRuntime::OpenCode,
+                        ctx,
+                    ) {
+                        controller.provider_chat().update(ctx, |model, ctx| {
+                            model.set_error(conversation_id, error, ctx)
+                        });
+                    }
+                });
+            }
+        }
+        #[cfg(target_family = "wasm")]
+        let _ = use_provider_default;
 
         // Associate pending context blocks with the new conversation so they remain
         // visible in the agent view. This must happen after the conversation is created
@@ -288,6 +322,12 @@ impl TerminalView {
                 AutoTriggerBehavior::InAgentView => was_in_agent_view_already,
                 AutoTriggerBehavior::Never => false,
             };
+            #[cfg(not(target_family = "wasm"))]
+            let should_auto_submit = should_auto_submit
+                && !self
+                    .ai_controller
+                    .as_ref(ctx)
+                    .has_provider_chat(conversation_id, ctx);
             if should_auto_submit {
                 // Clear the "enter again to send" ephemeral message if it's currently showing
                 self.ephemeral_message_model.update(ctx, |model, ctx| {

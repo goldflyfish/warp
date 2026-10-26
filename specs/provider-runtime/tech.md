@@ -89,7 +89,7 @@ shell bootstrap. No prompts, credentials, interpolated arguments, or permission-
 are added. Missing CLIs fail visibly in the terminal; the action does not fall back to Warp.
 
 The desktop launcher uses each CLI's own attended permission UI. It does not route through
-the unattended ACP driver. Native rendering through ACP remains experimental as described above.
+the unattended ACP driver. The separate native desktop bridge below uses attended ACP approvals.
 
 Desktop-launcher validation on Windows:
 
@@ -103,12 +103,61 @@ search isolation with its page title retained. They use WarpUI's in-process test
 mocked terminal resources. A live desktop shell launch, visual layout, and authenticated
 provider sessions still require end-to-end verification.
 
-## Next integration boundary
+## Native desktop bridge
 
-Add a provider/runtime selection model above `HarnessKind` without making model-provider names
-new harness variants. Bind each conversation to runtime identity, native session identity,
-provider/model ID, and capability metadata. Runtime adapters own authentication and protocol
-translation; the terminal owns conversation presentation and attended approvals.
+`controller/provider_chat.rs` routes provider-bound user prompts before Warp slash commands,
+request construction, and inference. `acp/desktop.rs` manages a local `opencode acp` process and
+reuses the ACP connection, event mapper, and native external-harness response pipeline.
+`agent_input_footer/provider_controls.rs` supplies runtime/model dropdowns, status, errors,
+retry, cancellation, and approval controls. Native runtime preference is machine-local and is
+independent of the interactive CLI launcher's preference.
+
+`ProviderChatSession` persists a binding ID, runtime, absolute working folder, session ID, and
+provider/model ID in local conversation data. Restored chats remain external-harness chats;
+unknown runtimes fail explicitly. The worker calls `session/load` for saved sessions, checks
+`loadSession` support, and requires exact `session/set_config_option` model confirmation.
+Runtime changes are limited to empty chats; provider session forks are rejected. Synthetic
+local stream IDs are not saved as Warp server conversation/task IDs. Passive suggestion request
+construction rejects provider conversations.
+
+The child inherits provider configuration and receives a process-only
+`OPENCODE_CONFIG_CONTENT` permission override of `ask`; global configuration files are untouched.
+Filesystem/terminal client capabilities are false, so OpenCode runs its own tools. ACP permission
+requests wait for an exact UI decision. Only `allow_once` is accepted, with explicit Warp command
+denylist/protected-path refusals enforced first. Pending approvals are dropped on stop/disconnect;
+requests and streamed updates are restricted to the bound session. Windows uses an owned job
+object to terminate the runtime and its non-breakaway children when the worker is dropped.
+
+Setup, model selection, and stopping have bounded waits. A model confirmation or prompt error
+closes the connection; it never retries a prompt against a different provider. Missing saved
+models leave prompts blocked while the user explicitly chooses an available model. Plain text
+and local host folders are supported initially; attached context, SSH/WSL execution, shared/cloud
+sessions, queued follow-ups, and provider forks require additional integration.
+
+Native regression coverage exercises saved-session loading, unavailable model/runtime behavior,
+exact model confirmation, attended approvals and cancellation, persistence, busy-query rejection,
+and streamed output through the real native history pipeline using an in-memory ACP peer.
+These tests do not replace a live desktop or authenticated-provider run.
+
+## Native validation
+
+Windows / Rust 1.92.0:
+
+- `cargo test --locked -p warp --lib provider_chat -- --nocapture`: 15 passed, 0 failed.
+- `cargo test --locked -p command scoped_job_ -- --nocapture`: 1 passed, 0 failed.
+- `cargo clippy --locked -p warp -p command -p persistence --all-targets --tests -- -D warnings`:
+  passed. Final formatting follows the repository validation order.
+- Real OpenCode 1.19.4 against an isolated local HTTP fixture: exact model selection,
+  attended write approval, denied write, and saved-session loading all passed. The fixture
+  used a dummy key and temporary files, without personal or project content.
+- A requested OpenRouter live turn failed with `User not found`. OpenRouter's direct
+  authentication endpoint independently returned HTTP 401 with the same message. A valid
+  provider connection is needed before repeating authenticated end-to-end validation.
+
+The automated native tests use WarpUI's in-process app harness and an in-memory ACP peer.
+Live desktop layout, a successful authenticated turn, and installer packaging remain unverified.
+
+## Remaining service boundary
 
 A local-only session implementation would additionally need to replace server-owned task IDs,
 conversation setup/persistence, and shared-session assumptions. Keep cloud sharing optional in

@@ -41,9 +41,11 @@ The initial change makes `--harness opencode` resolve to `opencode acp`, enables
 agent runs, and identifies it as OpenCode in the client. Existing Codex and Claude CLI paths
 remain available. Provider credentials remain managed by the selected runtime.
 
-This is an integration milestone. The ordinary desktop default is still Warp Agent. A unified
-provider settings screen, default-runtime preference, and an end-to-end desktop verification
-are still required before describing the fork as a replacement for Warp Agent.
+This is an integration milestone. Native desktop chats now offer Warp Agent or OpenCode in
+the input footer. OpenCode supplies the provider/model catalog. The selected native runtime
+becomes the default for new user-created chats on this computer. Warp Agent remains the initial
+default. End-to-end desktop and authenticated-provider verification are still required before
+describing the fork as a finished replacement application.
 
 ## Desktop local runtime launcher
 
@@ -61,10 +63,28 @@ official setup guide and explains login/API-key support. Authentication, provide
 and permission prompts happen in the runtime's own UI. The launcher does not copy credentials,
 edit global provider configuration, pass auto-approval flags, or silently select another agent.
 
-This makes the runtimes accessible from the desktop, but it is an interactive terminal route.
-The native ACP conversation bridge remains a separate integration. A native provider/model
-selector, attended ACP approvals, connection status, and packaging are still needed for the
-finished replacement experience.
+This launcher remains an interactive terminal route for Codex and Claude Code logins, as well
+as OpenCode. Native OpenCode chats use the separate ACP desktop bridge described below.
+
+## Native OpenCode chats
+
+In a new Agent chat, choose **OpenCode** in the input footer, then choose a provider/model
+advertised by the installed runtime. Replies and tool activity render in the native conversation.
+The footer shows connection status, errors, model selection, Stop, and connection retry.
+
+Connect providers through OpenCode's supported `/connect` flow or API configuration first.
+The app does not copy credentials into conversation data. Native chats request approval for
+tools through **Allow once** and **Deny** controls; existing hard deny rules still apply.
+
+Local history stores the runtime, working folder, provider/model ID, and OpenCode session ID.
+Reopening the chat loads that session and confirms its saved model. An unavailable runtime,
+folder, session, or model produces an error instead of using Warp or another provider.
+Warp passive suggestions are disabled for these conversations.
+
+This desktop bridge currently accepts plain text and local host folders. Attached context,
+session forks, shared/cloud sessions, SSH/WSL execution, and queued follow-up messages are not
+supported. It rejects unsupported input explicitly. Stop the current turn before sending another
+message. The general terminal launcher remains available for the other runtimes.
 
 ## Required behavior for the finished product
 
@@ -84,12 +104,10 @@ finished replacement experience.
 
 ## Work still required
 
-- Add the runtime/provider/model selector to native desktop conversations and save a native default.
-  The separate local terminal launcher already saves its preferred runtime.
-- Add connection status, setup instructions, and supported login/API-key actions for each runtime.
-- Replace the unattended ACP permission behavior with an attended approval flow for ordinary
-  desktop conversations. The upstream ACP driver currently auto-approves requests unless its
-  policy explicitly refuses them; it is not yet the finished interactive approval experience.
+- Add context attachments, queued follow-ups, and supported remote-session behavior to native chats.
+- Add native Codex/Claude runtime adapters where their supported authentication and protocols allow.
+  Existing login-based use remains available through the local terminal launcher.
+- Complete live desktop validation of the native selector, approvals, and connection recovery.
 - Decide whether local-only sessions without a Warp account are required. Current task creation,
   conversation persistence, and sharing still involve Warp services. Replacing inference alone
   does not remove those dependencies.

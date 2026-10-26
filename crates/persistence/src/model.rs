@@ -1167,9 +1167,20 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct ProviderChatSession {
+    pub binding_id: String,
+    pub runtime: String,
+    pub cwd: String,
+    pub session_id: Option<String>,
+    pub model_id: Option<String>,
+}
+
 // Serializes to `conversation_data` column in `agent_conversations`.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct AgentConversationData {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_session: Option<ProviderChatSession>,
     pub server_conversation_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_usage_metadata: Option<ConversationUsageMetadata>,

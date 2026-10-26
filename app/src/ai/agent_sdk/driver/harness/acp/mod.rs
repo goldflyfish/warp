@@ -19,6 +19,7 @@ mod attachments;
 mod bridge;
 mod cli_transcript;
 mod connection;
+pub(crate) mod desktop;
 mod launch;
 mod manifest;
 mod mapping;

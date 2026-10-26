@@ -478,6 +478,25 @@ pub const VOICE_INPUT_LANGUAGES: &[(&str, &str)] = &[
     ("zu", "Zulu"),
 ];
 
+#[derive(
+    Default,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Copy,
+    Clone,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeChatRuntime {
+    #[default]
+    Warp,
+    OpenCode,
+}
+
 /// Runtime launched by the local agent tab action. Credentials stay with the runtime.
 #[derive(
     Default,
@@ -1976,6 +1995,17 @@ define_settings_group!(AISettings, settings: [
         private: false,
         toml_path: "agents.warp_agent.other.should_render_use_agent_toolbar_for_user_commands",
         description: "Whether to show the \"Use Agent\" footer for terminal commands.",
+    }
+
+    native_chat_runtime: PreferredNativeChatRuntime {
+        type: NativeChatRuntime,
+        default: NativeChatRuntime::Warp,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.third_party.native_chat_runtime",
+        description: "The runtime selected for new native desktop conversations.",
     }
 
     local_agent_runtime: PreferredLocalAgentRuntime {

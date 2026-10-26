@@ -58,6 +58,7 @@ fn conversation_data_with_usage_metadata(
         last_event_sequence: None,
         pinned: false,
         use_warp_credits_instead_of_chatgpt: false,
+        provider_session: None,
     }
 }
 
@@ -1551,4 +1552,51 @@ fn fetched_memories_dedupes_keeping_first_position_and_latest_data() {
             fetched_memory("m1", "same memory id different store", "store-2", None),
         ]
     );
+}
+
+#[test]
+fn provider_chat_restoration_preserves_runtime_session_model_and_folder() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let config = crate::persistence::model::ProviderChatSession {
+            binding_id: "binding".to_owned(),
+            runtime: "opencode".to_owned(),
+            cwd: "/project".to_owned(),
+            session_id: Some("session-original".to_owned()),
+            model_id: Some("zai/model-a".to_owned()),
+        };
+        let data = AgentConversationData {
+            provider_session: Some(config.clone()),
+            ..Default::default()
+        };
+        let persisted = serde_json::to_string(&data).unwrap();
+        let restored = restored_conversation(Some(serde_json::from_str(&persisted).unwrap()));
+        assert_eq!(restored.driver(), ConversationDriver::ExternalHarness);
+        assert_eq!(restored.provider_session(), Some(&config));
+    });
+}
+
+#[test]
+fn provider_chat_unknown_runtime_restores_without_becoming_warp() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let data: AgentConversationData = serde_json::from_str(r#"{"provider_session":{"binding_id":"binding","runtime":"uninstalled-runtime","cwd":"/project","session_id":"existing","model_id":"provider/model"}}"#).unwrap();
+        let restored = restored_conversation(Some(data));
+        assert_eq!(restored.driver(), ConversationDriver::ExternalHarness);
+        assert_eq!(
+            restored.provider_session().unwrap().runtime,
+            "uninstalled-runtime"
+        );
+    });
+}
+
+#[test]
+fn provider_chat_legacy_conversations_keep_their_native_driver() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let data: AgentConversationData = serde_json::from_str("{}").unwrap();
+        let restored = restored_conversation(Some(data));
+        assert_eq!(restored.driver(), ConversationDriver::Native);
+        assert!(restored.provider_session().is_none());
+    });
 }
