@@ -113,7 +113,8 @@ message. The general terminal launcher remains available for the other runtimes.
   does not remove those dependencies.
 - Verify real authenticated turns with OpenAI, Anthropic, and Z.ai, plus cancellation, file edits,
   denied actions, provider failure, and conversation resumption.
-- Brand and package the fork after the integration is stable. Preserve upstream license notices.
+- Windows portable and installer build scripts are available; see [packaging](windows-packaging.md).
+  Complete a full release build, desktop validation and signing before distributing a release.
 
 ## Sources checked on 2026-10-26
 

@@ -74,6 +74,8 @@ objc2-foundation = { workspace = true, features = [
 tempfile.workspace = true
 
 [dev-dependencies]
+command.workspace = true
+tempfile.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true
 

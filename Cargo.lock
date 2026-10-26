@@ -15674,6 +15674,7 @@ dependencies = [
  "async-broadcast",
  "cfg-if",
  "chrono",
+ "command",
  "command-corrections",
  "concat-idents",
  "dashmap",

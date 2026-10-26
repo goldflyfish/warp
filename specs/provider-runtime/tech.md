@@ -151,11 +151,37 @@ Windows / Rust 1.92.0:
   attended write approval, denied write, and saved-session loading all passed. The fixture
   used a dummy key and temporary files, without personal or project content.
 - A requested OpenRouter live turn failed with `User not found`. OpenRouter's direct
-  authentication endpoint independently returned HTTP 401 with the same message. A valid
-  provider connection is needed before repeating authenticated end-to-end validation.
+  authentication endpoint independently returned HTTP 401 with the same message. After the
+  user saved a replacement key through OpenCode's file-reference config, authentication returned
+  HTTP 200 and a real `openrouter/openai/gpt-4.1-nano` protocol turn streamed
+  `MYWARP_OPENROUTER_OK` and completed with `end_turn`. No project content was sent.
 
 The automated native tests use WarpUI's in-process app harness and an in-memory ACP peer.
-Live desktop layout, a successful authenticated turn, and installer packaging remain unverified.
+Live desktop layout and a provider turn through the native desktop window remain unverified.
+The authenticated OpenRouter protocol turn passed separately.
+
+## Windows package profiles
+
+The root `build-portable.bat` / `.py` and `build-installer.bat` / `.py` entry points share
+`script/windows/package_mywarp.py`. They build the OSS binary with `release_bundle,gui`,
+stage the Windows runtime DLLs, PowerShell bootstrap, bundled resources, license notices and
+a native OpenCode executable, then create a portable ZIP or compile a per-user Inno installer.
+Existing outputs are refused rather than replaced; build-machine profiles and credentials are
+never packaging inputs. See [Windows packaging](windows-packaging.md) for flags and prerequisites.
+
+`warp_core::windows_package` detects `mywarp-portable` or `mywarp-installed` beside the running
+executable. Portable profiles live in the adjacent `profile` directory. Installed profiles live
+in the Windows known Local AppData folder under `MyWarp`. Config, data, state and cache helpers,
+including home-style Warp config, use that profile. Executables without a marker retain their
+existing paths. Single-instance mutexes and URI pipes use distinct installed/portable namespaces.
+
+The OSS entry point initializes a fresh profile before starting threads, and adds the bundled
+OpenCode shim to its process PATH. Native chats resolve the bundled native executable directly.
+Both native and terminal OpenCode launches use profile-scoped XDG/config directories; inherited
+inline OpenCode config is discarded for packaged launches. The native worker still forces
+attended `permission: ask`. Existing provider config is preserved, and provider API-key
+environment variables remain supported. The installer registers per-user shortcuts and an
+uninstaller while preserving the separate user profile on uninstall.
 
 ## Remaining service boundary
 

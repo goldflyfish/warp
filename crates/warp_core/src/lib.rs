@@ -15,6 +15,8 @@ pub mod paths;
 pub mod platform;
 pub mod safe_log;
 pub mod semantic_selection;
+#[cfg(windows)]
+pub mod windows_package;
 pub use settings;
 // Re-export settings macros for backward compatibility
 pub use settings::{

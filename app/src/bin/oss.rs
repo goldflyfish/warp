@@ -8,6 +8,8 @@ use warp_core::channel::{Channel, ChannelConfig, ChannelState, OzConfig, WarpSer
 
 // Simple wrapper around warp::run() for Warp OSS builds.
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    initialize_windows_package()?;
     let mut state = ChannelState::new(
         Channel::Oss,
         ChannelConfig {
@@ -27,6 +29,37 @@ fn main() -> Result<()> {
     ChannelState::set(state);
 
     warp::run()
+}
+
+#[cfg(windows)]
+fn initialize_windows_package() -> Result<()> {
+    use warp_core::windows_package;
+
+    if let Some(profile) = windows_package::profile_dir() {
+        for name in ["config", "state", "data", "cache"] {
+            std::fs::create_dir_all(profile.join(name))?;
+        }
+        windows_package::prepare_opencode_profile(profile)?;
+        // SAFETY: This runs at the executable entry point, before Warp starts any threads.
+        unsafe {
+            std::env::set_var("MYWARP_PROFILE_DIR", profile);
+        }
+    }
+    let tools = std::env::current_exe()?
+        .parent()
+        .map(|directory| directory.join("tools/bin"));
+    if let Some(tools) = tools.filter(|directory| directory.is_dir()) {
+        let mut paths = vec![tools];
+        paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        let path = std::env::join_paths(paths)?;
+        // SAFETY: No threads have been started at this point.
+        unsafe {
+            std::env::set_var("PATH", path);
+        }
+    }
+    Ok(())
 }
 
 // If we're not using an external plist, embed the following as the Info.plist.

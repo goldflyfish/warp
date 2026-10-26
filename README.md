@@ -3,7 +3,8 @@
 > native desktop chats now offer OpenCode provider/model selection and attended approvals.
 > Warp Agent remains the initial default until you choose OpenCode. See the
 > [product plan](specs/provider-runtime/product.md) and
-> [implementation notes](specs/provider-runtime/tech.md).
+> [implementation notes](specs/provider-runtime/tech.md). Build a portable ZIP or per-user
+> installer with the [Windows packaging scripts](specs/provider-runtime/windows-packaging.md).
 
 <a href="https://www.warp.dev">
     <img width="1024" alt="Warp Agentic Development Environment product preview" src="https://github.com/user-attachments/assets/9976b2da-2edd-4604-a36c-8fd53719c6d4" />

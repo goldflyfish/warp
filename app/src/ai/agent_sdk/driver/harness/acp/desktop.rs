@@ -369,7 +369,23 @@ async fn run(
             config.cwd
         );
     }
-    let mut process = command::r#async::Command::new("opencode");
+    #[cfg(windows)]
+    let runtime = warp_core::paths::bundled_resources_dir()
+        .and_then(|resources| {
+            resources
+                .parent()
+                .map(|directory| directory.join("tools/opencode/opencode.exe"))
+        })
+        .filter(|executable| executable.is_file())
+        .unwrap_or_else(|| PathBuf::from("opencode"));
+    #[cfg(not(windows))]
+    let runtime = PathBuf::from("opencode");
+    let mut process = command::r#async::Command::new(runtime);
+    #[cfg(windows)]
+    if let Some(profile) = warp_core::windows_package::profile_dir() {
+        warp_core::windows_package::prepare_opencode_profile(profile)?;
+        process.envs(warp_core::windows_package::opencode_environment(profile));
+    }
     process
         .arg("acp")
         .current_dir(&cwd)
@@ -377,9 +393,16 @@ async fn run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    let inline_config = std::env::var("OPENCODE_CONFIG_CONTENT").ok();
+    #[cfg(windows)]
+    let inline_config = if warp_core::windows_package::profile_dir().is_some() {
+        None
+    } else {
+        inline_config
+    };
     process.env(
         "OPENCODE_CONFIG_CONTENT",
-        attended_config(std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref())?,
+        attended_config(inline_config.as_deref())?,
     );
     let mut child = process.spawn().context("Could not start OpenCode. Install it on PATH and connect a provider using OpenCode's /connect command.")?;
     #[cfg(target_os = "windows")]

@@ -28,6 +28,7 @@ script/font_fallback/downloaded_fonts
 
 # Don't include the generated Windows installer
 script/windows/Output
+/dist/
 .aider*
 
 # temporary vim files. Source: https://github.com/github/gitignore/blob/main/Global/Vim.gitignore
