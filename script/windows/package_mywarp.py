@@ -314,7 +314,7 @@ def main(mode: str, argv: list[str] | None = None) -> int:
             raise PackagingError("--version must contain three or four numeric parts, each no larger than 65535.")
         args.repo = args.repo.resolve()
         require_file(args.repo / "Cargo.toml")
-        output = (args.output_dir or args.repo / "dist").resolve()
+        output = (args.output_dir or args.repo / "Packages" / ("Portable" if mode == "portable" else "Installer")).resolve()
         arch = args.arch or host_arch()
         name = f"MyWarp-{args.version}-{arch}"
         artifact = output / (f"{name}-portable.zip" if mode == "portable" else f"{name}-Setup.exe")

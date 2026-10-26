@@ -4,8 +4,8 @@ Run either pair from the repository root:
 
 | Build | Batch entry point | Python entry point | Output |
 | --- | --- | --- | --- |
-| Portable | `build-portable.bat` | `python build-portable.py` | A ready-to-run folder and ZIP |
-| Installed | `build-installer.bat` | `python build-installer.py` | A per-user Setup EXE with uninstaller and shortcuts |
+| Portable | `build-portable.bat` | `python build-portable.py` | Ready-to-run folder, ZIP and manifest in `Packages\Portable` |
+| Installed | `build-installer.bat` | `python build-installer.py` | Setup EXE and manifest in `Packages\Installer` |
 
 Python is required on the build computer, not on computers running the packaged app.
 The package includes OpenCode. Codex and Claude Code are separate installations.
@@ -45,7 +45,9 @@ build-portable.bat --skip-build --binary "C:\Build\warp-oss.exe" --resources-dir
 The same flags work with `build-installer.bat`. Prepared resources must include the settings
 schema, bundled resources, and `THIRD_PARTY_LICENSES.txt`; the normal build prepares them with
 the existing Windows resource script. `--version 0.1.1` changes artifact names and the installer
-version. `--output-dir PATH` selects a different output folder. Existing outputs are never
+version. The default output folders are `Packages\Portable` and `Packages\Installer` under the
+repository root, regardless of the directory from which the script is launched.
+`--output-dir PATH` explicitly overrides that default. Existing outputs are never
 overwritten, including a portable profile used after an earlier build.
 
 ## Storage
