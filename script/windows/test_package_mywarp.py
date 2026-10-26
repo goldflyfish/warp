@@ -2,6 +2,9 @@ import argparse
 import contextlib
 import io
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 import struct
 import tempfile
@@ -10,6 +13,8 @@ from unittest.mock import patch
 import zipfile
 
 import package_mywarp as packaging
+from windows_build_tools import configure
+from windows_build_ui import BuildUI
 
 
 def write_pe(path, machine=0x8664):
@@ -73,8 +78,13 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(self.invoke(), 0)
         key = self.output / 'MyWarp-0.1.0-x64-portable/profile/user.key'
         key.write_text('existing-private-fixture')
-        self.assertEqual(self.invoke(), 1)
+        self.assertEqual(self.invoke(), 0)
         self.assertEqual(key.read_text(), 'existing-private-fixture')
+        rebuilt = self.output / 'MyWarp-0.1.0-x64-build2-portable'
+        self.assertTrue((rebuilt / 'MyWarp.exe').is_file())
+        self.assertFalse((rebuilt / 'profile/user.key').exists())
+        with zipfile.ZipFile(self.output / (rebuilt.name + '.zip')) as archive:
+            self.assertFalse(any(name.endswith('user.key') for name in archive.namelist()))
 
     def test_wrong_runtime_architecture_fails_before_creating_output(self):
         write_pe(self.opencode, machine=0xAA64)
@@ -129,6 +139,81 @@ class PackagingTests(unittest.TestCase):
         with patch.object(packaging.shutil, 'which', return_value='fixture-tool'), patch.object(packaging, 'run'), patch.object(packaging.subprocess, 'check_output', return_value=json.dumps({'target_directory': str(target)})), patch.dict(packaging.os.environ, {'CARGO_BUILD_TARGET': ''}):
             self.assertEqual(packaging.build_binary(args, 'x64'), expected)
 
+
+    def test_local_build_configuration_finds_tools_without_global_path(self):
+        tools = self.repo / 'private tools'
+        (tools / 'cargo/bin').mkdir(parents=True)
+        opencode = write_pe(tools / 'opencode/bin/opencode.exe')
+        config = self.repo / 'windows-build.local.json'
+        config.write_text(json.dumps({'cargo_home': 'private tools/cargo', 'opencode': 'private tools/opencode/bin/opencode.exe', 'target_dir': 'build cache', 'build_jobs': 2}))
+        args = argparse.Namespace(repo=self.repo, build_config=None, opencode=None)
+        with patch.dict(os.environ, {'PATH': ''}, clear=True):
+            self.assertEqual(configure(args), config)
+            self.assertEqual(args.opencode, opencode)
+            self.assertEqual(os.environ['CARGO_TARGET_DIR'], str(self.repo / 'build cache'))
+            self.assertIn(str(tools / 'cargo/bin'), os.environ['PATH'].split(os.pathsep))
+            self.assertEqual(os.environ['CARGO_BUILD_JOBS'], '2')
+
+    def test_explicit_runtime_overrides_machine_local_build_configuration(self):
+        (self.repo / 'windows-build.local.json').write_text(json.dumps({'opencode': 'other.exe'}))
+        args = argparse.Namespace(repo=self.repo, build_config=None, opencode=self.opencode)
+        with patch.dict(os.environ):
+            configure(args)
+        self.assertEqual(args.opencode, self.opencode)
+
+    def test_build_config_rejects_unknown_keys_and_missing_explicit_file(self):
+        location = self.repo / 'windows-build.local.json'
+        location.write_text(json.dumps({'OPENCODE_CONFIG_CONTENT': 'not a build setting'}))
+        args = argparse.Namespace(repo=self.repo, build_config=location, opencode=None)
+        with self.assertRaisesRegex(ValueError, 'Unknown build settings'):
+            configure(args)
+        location.unlink()
+        with self.assertRaisesRegex(ValueError, 'does not exist'):
+            configure(args)
+
+    def test_default_mode_invokes_compilation_and_prepares_real_build_resources(self):
+        arguments = ['--repo', str(self.repo), '--opencode', str(self.opencode), '--output-dir', str(self.output), '--plain']
+        def resources(args, binary, destination):
+            self.assertFalse(args.skip_build)
+            self.assertEqual(binary.name, 'MyWarp.exe')
+            packaging.shutil.copytree(self.resources, destination)
+        with patch.object(packaging, 'build_binary', return_value=self.binary) as build, patch.object(packaging, 'prepare_resources', side_effect=resources), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(packaging.main('portable', arguments), 0)
+        self.assertFalse(build.call_args.args[0].skip_build)
+        self.assertTrue((self.output / 'MyWarp-0.1.0-x64-portable.zip').is_file())
+
+    def test_console_command_failure_keeps_full_log_and_failure_report(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            ui = BuildUI('portable', self.output, plain=True)
+            ui.step(2, 'Compile MyWarp')
+            with self.assertRaises(subprocess.CalledProcessError):
+                ui.run([sys.executable, '-c', 'print("compiler detail"); raise SystemExit(9)'], repo=self.repo)
+            ui.finish(error='Compiler exited with code 9')
+        self.assertIn('compiler detail', ui.log_path.read_text())
+        report = ui.report_path.read_text()
+        self.assertIn('Build needs attention', report)
+        self.assertIn('Compiler exited with code 9', report)
+        self.assertNotIn('Your package is ready', report)
+
+    def test_success_report_escapes_file_names_and_records_completed_steps(self):
+        artifact = self.root / 'package & details.zip'
+        artifact.write_bytes(b'fixture')
+        with contextlib.redirect_stdout(io.StringIO()):
+            ui = BuildUI('portable', self.output, plain=True)
+            ui.step(5, 'Verify package integrity')
+            ui.finish(artifacts=[artifact], profile='profile')
+        report = ui.report_path.read_text()
+        self.assertIn('package &amp; details.zip', report)
+        self.assertIn('Your package is ready', report)
+        self.assertEqual(ui.steps[0]['status'], 'passed')
+
+    def test_blank_compiler_progress_keeps_the_current_stage_visible(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            ui = BuildUI('installer', self.output, plain=True)
+            ui.step(4, 'Compile Windows installer')
+            ui.progress('\n')
+            self.assertEqual(ui.detail, 'Compile Windows installer')
+            ui.finish()
 
 if __name__ == '__main__':
     unittest.main()

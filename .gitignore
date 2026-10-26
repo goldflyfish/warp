@@ -72,3 +72,7 @@ __pycache__/
 # Project notes
 .note/
 .claude/scheduled_tasks.lock
+
+# Machine-local Windows packaging tools and configuration
+/windows-build.local.json
+/.build-tools/

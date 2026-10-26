@@ -1,0 +1,9 @@
+{
+  "cargo_home": "C:\\Users\\YOUR_NAME\\.cargo",
+  "protoc": "C:\\Tools\\protoc\\bin\\protoc.exe",
+  "protoc_include": "C:\\Tools\\protoc\\include",
+  "libclang_path": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\Llvm\\x64\\bin",
+  "opencode": "C:\\Tools\\opencode\\bin\\opencode.exe",
+  "iscc": "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe",
+  "build_jobs": 4
+}

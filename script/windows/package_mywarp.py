@@ -17,6 +17,13 @@ import sys
 import tempfile
 import zipfile
 
+try:
+    from .windows_build_tools import configure
+    from .windows_build_ui import BuildUI
+except ImportError:
+    from windows_build_tools import configure
+    from windows_build_ui import BuildUI
+
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 MARKERS = {"portable": "mywarp-portable", "installer": "mywarp-installed"}
@@ -30,12 +37,18 @@ OPENROUTER_EXAMPLE = {
 }
 
 
+ACTIVE_UI = None
+
+
 class PackagingError(Exception):
     pass
 
 
 def run(arguments: list[str | Path], *, repo: Path, env: dict[str, str] | None = None) -> None:
-    subprocess.run([str(argument) for argument in arguments], cwd=repo, env=env, check=True)
+    if ACTIVE_UI is None:
+        subprocess.run([str(argument) for argument in arguments], cwd=repo, env=env, check=True)
+    else:
+        ACTIVE_UI.run(arguments, repo=repo, env=env)
 
 
 def require_file(path: Path) -> Path:
@@ -95,7 +108,7 @@ def host_arch() -> str:
 def find_opencode(explicit: Path | None, arch: str) -> Path:
     candidate = explicit or (Path(shutil.which("opencode.exe")) if shutil.which("opencode.exe") else None)
     if candidate is None:
-        raise PackagingError("OpenCode's native executable is required. Pass --opencode C:\\path\\to\\opencode.exe. A .cmd npm shim is not a portable runtime.")
+        raise PackagingError("OpenCode is missing. Install it with npm install -g opencode-ai, or set opencode in windows-build.local.json (see windows-build.example.json).")
     return require_pe(candidate.resolve(), arch)
 
 
@@ -136,7 +149,8 @@ def build_binary(args: argparse.Namespace, arch: str) -> Path:
     if not shutil.which("cargo"):
         raise PackagingError("Rust/Cargo is unavailable. Run script\\windows\\bootstrap.ps1 first.")
     if shutil.which("cargo-about") is None:
-        raise PackagingError("cargo-about is required for bundled attributions. Install it with: cargo install cargo-about --locked")
+        run(["cargo", "install", "cargo-about", "--version", "0.9.2", "--locked", "--root", args.repo / ".build-tools"], repo=args.repo)
+        os.environ["PATH"] = str(args.repo / ".build-tools/bin") + os.pathsep + os.environ.get("PATH", "")
     environment = os.environ.copy()
     environment.update(CARGO_BIN_NAME="oss", WARP_APP_NAME="MyWarp", GIT_RELEASE_TAG=args.version, CARGO_FULL_PROFILE="debug" if args.profile == "dev" else "release")
     profile_dir = "debug" if args.profile == "dev" else "release"
@@ -242,7 +256,7 @@ def stage_payload(args: argparse.Namespace, mode: str, arch: str, binary: Path, 
         copy_file(args.repo / name, destination / name)
     copy_file(opencode, destination / "tools/opencode/opencode.exe")
     copy_file(find_opencode_license(args.opencode_license, opencode), destination / "tools/opencode/LICENSE.txt")
-    prepare_resources(args, binary, destination / "resources")
+    prepare_resources(args, destination / "MyWarp.exe", destination / "resources")
     write_provider_templates(destination / "resources/provider-config")
     write_text(destination / MARKERS[mode], "")
     write_text(destination / "tools/bin/opencode.cmd", opencode_wrapper(), batch=True)
@@ -290,10 +304,15 @@ def make_zip(source: Path, destination: Path) -> None:
 
 
 def main(mode: str, argv: list[str] | None = None) -> int:
+    global ACTIVE_UI
     parser = argparse.ArgumentParser(description=f"Build a MyWarp Windows {mode} distribution.")
     parser.add_argument("--repo", type=Path, default=REPOSITORY)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--version", default="0.1.0")
+    parser.add_argument("--build-config", type=Path, help="Machine-local build tool settings; defaults to windows-build.local.json")
+    parser.add_argument("--plain", action="store_true", help="Disable console colors and animation")
+    parser.add_argument("--pause", action="store_true", help="Keep an interactive console open after completion")
+    parser.add_argument("--no-pause", dest="pause", action="store_false", help="Exit without waiting for Enter")
     parser.add_argument("--profile", choices=("release", "dev"), default="release")
     parser.add_argument("--arch", choices=tuple(MACHINES))
     parser.add_argument("--opencode", type=Path, help="Native opencode.exe, not an npm .cmd shim")
@@ -305,6 +324,8 @@ def main(mode: str, argv: list[str] | None = None) -> int:
     if mode == "installer":
         parser.add_argument("--iscc", type=Path)
     args = parser.parse_args(argv)
+    previous_ui = ACTIVE_UI
+    ui = None
     try:
         if sys.version_info < (3, 11):
             raise PackagingError("Python 3.11 or newer is required.")
@@ -320,32 +341,65 @@ def main(mode: str, argv: list[str] | None = None) -> int:
         artifact = output / (f"{name}-portable.zip" if mode == "portable" else f"{name}-Setup.exe")
         folder = output / f"{name}-portable"
         receipt = output / f"{name}-{mode}-manifest.json"
-        for path in [artifact, receipt] + ([folder] if mode == "portable" else []):
-            if path.exists():
-                raise PackagingError(f"Output already exists and was left untouched: {path}. Choose another --output-dir or --version.")
+        build_number = 1
+        while any(path.exists() for path in [artifact, receipt] + ([folder] if mode == "portable" else [])):
+            build_number += 1
+            build_name = f"{name}-build{build_number}"
+            artifact = output / (f"{build_name}-portable.zip" if mode == "portable" else f"{build_name}-Setup.exe")
+            folder = output / f"{build_name}-portable"
+            receipt = output / f"{build_name}-{mode}-manifest.json"
+        ui = BuildUI(mode, output, plain=args.plain)
+        ACTIVE_UI = ui
+        ui.banner(args.version, arch, args.profile)
+        if build_number > 1:
+            ui.line(f"  Earlier packages kept. Creating build {build_number}.")
+        ui.step(1, "Check build tools and Windows assets")
+        settings = configure(args)
+        if settings:
+            ui.line(f"  Build settings: {settings}")
         opencode = find_opencode(args.opencode, arch)
         find_opencode_license(args.opencode_license, opencode)
         iscc = find_iscc(args.iscc) if mode == "installer" else None
         validate_assets(args.repo, arch)
+        ui.step(2, "Compile MyWarp" if not args.skip_build else "Validate supplied executable")
         binary = build_binary(args, arch)
         with staging_directory(output) as stage:
             payload = stage / (folder.name if mode == "portable" else "payload")
+            ui.step(3, "Prepare resources, licenses and configuration")
             stage_payload(args, mode, arch, binary, opencode, payload)
             manifest = write_manifest(payload, args, mode, arch)
+            ui.step(4, "Create portable ZIP" if mode == "portable" else "Compile Windows installer")
             if mode == "portable":
                 temporary_artifact = stage / artifact.name
                 make_zip(payload, temporary_artifact)
+                ui.step(5, "Verify package integrity")
+                with zipfile.ZipFile(temporary_artifact) as archive:
+                    if archive.testzip() is not None:
+                        raise PackagingError("Portable archive integrity check failed.")
                 payload.rename(folder)
                 temporary_artifact.rename(artifact)
             else:
                 run([iscc, "/Qp", f"/DPayloadDir={payload}", f"/DPackageVersion={args.version}", f"/DPackageArch={arch}", f"/O{stage}", f"/F{artifact.stem}", args.repo / "script/windows/mywarp-installer.iss"], repo=args.repo)
+                ui.step(5, "Verify installer executable")
                 require_file(stage / artifact.name).rename(artifact)
-            write_text(receipt, json.dumps(manifest, indent=2) + "\n")
-        print(f"Created: {artifact}")
-        if mode == "portable":
-            print(f"Ready to run: {folder / 'MyWarp.exe'}")
-        print(f"Profile: {manifest['profile']}")
+            with artifact.open("rb") as artifact_file:
+                artifact_hash = hashlib.file_digest(artifact_file, "sha256").hexdigest()
+            receipt_data = {**manifest, "artifact": artifact.name, "artifact_sha256": artifact_hash, "artifact_size": artifact.stat().st_size, "build_profile": args.profile}
+            write_text(receipt, json.dumps(receipt_data, indent=2) + "\n")
+        artifacts = [artifact, receipt] + ([folder] if mode == "portable" else [])
+        ui.finish(artifacts=artifacts, profile=str(folder / "profile") if mode == "portable" else manifest["profile"])
         return 0
-    except (PackagingError, OSError, subprocess.CalledProcessError, ValueError) as error:
-        print(f"Packaging failed: {error}", file=sys.stderr)
+    except (PackagingError, OSError, subprocess.CalledProcessError, ValueError, KeyboardInterrupt) as error:
+        message = "Build cancelled." if isinstance(error, KeyboardInterrupt) else str(error)
+        if ui:
+            ui.finish(error=message)
+        else:
+            print(f"Packaging failed: {message}", file=sys.stderr)
         return 1
+    finally:
+        ACTIVE_UI = previous_ui
+        if args.pause and sys.stdin.isatty():
+            try:
+                input("\n  Press Enter to close this window...")
+            except (EOFError, KeyboardInterrupt):
+                pass

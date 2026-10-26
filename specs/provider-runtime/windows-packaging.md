@@ -22,7 +22,34 @@ The package includes OpenCode. Codex and Claude Code are separate installations.
   `--opencode-license PATH`.
 - Installer builds also require [Inno Setup 6.3+](https://jrsoftware.org/isinfo.php).
   Use `--iscc PATH` if `ISCC.exe` is not found automatically. A portable Inno Setup compiler
-  works too. The scripts do not install build tools or change system settings.
+  works too. Missing `cargo-about` is installed automatically into `.build-tools` using a pinned
+  version. Other tools must be installed or supplied in the local build settings. The scripts
+  do not change system settings.
+
+## Run without arguments
+
+Double-click `build-portable.bat` or `build-installer.bat`. Each script compiles the OSS app
+with `release_bundle,gui`, generates licenses and the settings schema by running the built
+application, then produces the requested distribution. The second script reuses Cargo's build
+cache. The first release compilation can take a long time; subsequent builds are incremental.
+
+Build tools on PATH and standard install locations are detected. For tools installed elsewhere,
+copy `windows-build.example.json` to `windows-build.local.json` in the repository root and edit
+the paths. This ignored, machine-local file applies only to the build process; it is never
+included in packages. Remove entries for tools already available through PATH.
+
+Supported settings: `cargo_home`, `rustup_home`, `protoc`, `protoc_include`, `libclang_path`,
+`target_dir`, `opencode`, `opencode_license`, `iscc`, and `build_jobs`. Relative paths resolve
+beside the settings file. Explicit command-line tool paths override the local file.
+Use `--build-config PATH` for another build settings file. These settings are separate from
+the application's provider config and never need API keys.
+
+The console shows five numbered stages, colors in supported terminals, elapsed time and final
+artifact paths. The external manifest records the archive/setup SHA-256 and size. Complete compiler output and an HTML build report are saved under `Packages\Logs`.
+Failures return a nonzero exit code and show the compiler's final diagnostic lines. Double-clicked
+batch windows stay open; Python and noninteractive runs exit normally. `--plain` disables colors,
+`--pause` keeps an interactive console open explicitly, and `--no-pause` makes a batch invocation
+exit immediately. `NO_COLOR` is also respected.
 
 ## Examples
 
@@ -47,8 +74,9 @@ schema, bundled resources, and `THIRD_PARTY_LICENSES.txt`; the normal build prep
 the existing Windows resource script. `--version 0.1.1` changes artifact names and the installer
 version. The default output folders are `Packages\Portable` and `Packages\Installer` under the
 repository root, regardless of the directory from which the script is launched.
-`--output-dir PATH` explicitly overrides that default. Existing outputs are never
-overwritten, including a portable profile used after an earlier build.
+`--output-dir PATH` explicitly overrides that default. Existing outputs are kept, including a
+portable profile used after an earlier build. Rebuilding the same version automatically adds
+`-build2`, `-build3`, and so on to the new package names.
 
 ## Storage
 
