@@ -83,13 +83,14 @@ portable profile used after an earlier build. Rebuilding the same version automa
 | Content | Portable | Installed |
 | --- | --- | --- |
 | Program | Extracted package folder | `%LOCALAPPDATA%\Programs\MyWarp` by default |
-| Profile | `Configurations` beside `MyWarp.exe` | `%LOCALAPPDATA%\MyWarp\Configurations` |
-| Warp settings | `config\settings.toml` in the profile | Same profile-relative path |
-| Database, logs, protected credentials | `state` in the profile | Same profile-relative path |
-| Themes and workflows | `data` in the profile | Same profile-relative path |
-| Cache | `cache` in the profile | Same profile-relative path |
-| OpenCode config | `providers\config\opencode\opencode.jsonc` in the profile | Same profile-relative path |
-| OpenCode saved credentials | `providers\data\opencode\auth.json` in the profile | Same profile-relative path |
+| Configuration files | `Configurations` beside `MyWarp.exe` | `%LOCALAPPDATA%\MyWarp\Configurations` |
+| Generated runtime files | `Runtime` beside `MyWarp.exe` | `%LOCALAPPDATA%\MyWarp\Runtime` |
+| Settings and execution profiles | `Configurations\settings.toml` | Same path under `%LOCALAPPDATA%\MyWarp` |
+| Themes and workflows | `Configurations\themes` and `Configurations\workflows` | Same paths under `%LOCALAPPDATA%\MyWarp` |
+| Provider/model/MCP settings | `Configurations\providers\opencode.jsonc` | Same path under `%LOCALAPPDATA%\MyWarp` |
+| API-key files | `Configurations\providers\keys` | Same path under `%LOCALAPPDATA%\MyWarp` |
+| Database and history | `Runtime\state` and `Runtime\providers\data` | Same paths under `%LOCALAPPDATA%\MyWarp` |
+| Caches, logs, installed tools | `Runtime` subfolders | Same paths under `%LOCALAPPDATA%\MyWarp` |
 
 The empty `mywarp-portable` / `mywarp-installed` marker determines the mode. Directly launching
 `MyWarp.exe` works; the batch launcher is optional. Keep the marker beside the executable.
@@ -98,15 +99,16 @@ pipes are separated by package profile, so installed and portable builds can run
 
 To back up or transfer configuration, close MyWarp and OpenCode and copy the entire
 `Configurations` folder, including its subfolders. Paste it beside the portable executable or
-under `%LOCALAPPDATA%\MyWarp` for an installed copy. Both the GUI and `OpenCode.bat` migrate
-the old portable `profile` folder or installed `%LOCALAPPDATA%\MyWarp` contents when
-`Configurations` is missing or empty. Existing files in a copied folder take precedence.
-Fresh portable packages include an empty `Configurations` folder, initialized on first launch.
+under `%LOCALAPPDATA%\MyWarp` for an installed copy. No runtime directory or database is needed
+to load the copied settings. Fresh packages ship actual settings and provider configuration files.
+Both the GUI and `OpenCode.bat` split older combined profiles into declarative configuration and
+runtime data. Copied configuration takes precedence; replaced legacy data is retained under Runtime.
+Provider subscription sign-in sessions remain runtime data and may require a new sign-in.
 
 Both package modes isolate OpenCode configuration from the build computer's environment/config
 overrides. Provider API-key environment variables remain supported. The native chat still forces
 attended `permission: ask`. To connect, run the packaged `OpenCode.bat` and use `/connect`, or
-copy the OpenRouter example from `resources\provider-config` into the profile's OpenCode config
+copy the OpenRouter example from `resources\provider-config` into `Configurations\providers`
 folder and save the key as `keys\openrouter.key`. Keys, logins and history are never copied into
 packages from the build computer. Existing provider configuration is preserved on startup.
 

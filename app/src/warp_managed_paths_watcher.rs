@@ -19,7 +19,7 @@ use watcher::{BulkFilesystemWatcher, BulkFilesystemWatcherEvent};
 const WARP_MANAGED_PATHS_WATCHER_DEBOUNCE_MILLI_SECS: u64 = 500;
 
 pub(crate) fn warp_data_dir() -> PathBuf {
-    warp_core::paths::data_dir()
+    warp_core::paths::user_config_dir()
 }
 
 #[cfg(target_family = "wasm")]

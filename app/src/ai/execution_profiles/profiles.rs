@@ -72,7 +72,7 @@ fn file_backed_execution_profiles_enabled(launch_mode: &LaunchMode) -> bool {
     match launch_mode {
         LaunchMode::Tui { .. } => true,
         LaunchMode::App { .. } | LaunchMode::Test { .. } => {
-            FeatureFlag::FileBackedExecutionProfiles.is_enabled()
+            warp_core::mywarp::enabled() || FeatureFlag::FileBackedExecutionProfiles.is_enabled()
         }
         LaunchMode::CommandLine { .. }
         | LaunchMode::RemoteServerProxy

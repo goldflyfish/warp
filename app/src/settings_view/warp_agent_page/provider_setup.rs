@@ -223,7 +223,10 @@ impl ProviderSetup {
             ctx,
         );
         if let Ok(profile) = warp_core::provider_setup::profile_dir()
-            && let Ok(text) = std::fs::read_to_string(profile.join("agent-instructions.md"))
+            && let Ok(text) = std::fs::read_to_string(
+                warp_core::windows_package::configuration_dir(&profile)
+                    .join("agent-instructions.md"),
+            )
         {
             instructions.update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
         }

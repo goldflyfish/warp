@@ -32,12 +32,12 @@ build-installer.bat
 
 The default package version is **0.3.0**. Outputs go to `Packages\Portable` and `Packages\Installer`; build logs and HTML reports go to `Packages\Logs`.
 
-| Distribution | Configuration and local state |
-| --- | --- |
-| Portable | `Configurations\` beside `MyWarp.exe` |
-| Installed | `%LOCALAPPDATA%\MyWarp\Configurations\` |
+| Distribution | Configuration files | Generated local state |
+| --- | --- | --- |
+| Portable | `Configurations\` beside `MyWarp.exe` | `Runtime\` beside `MyWarp.exe` |
+| Installed | `%LOCALAPPDATA%\MyWarp\Configurations\` | `%LOCALAPPDATA%\MyWarp\Runtime\` |
 
-Close MyWarp and OpenCode, then copy the entire `Configurations` folder to back up or transfer settings and provider connections. Paste it beside a portable `MyWarp.exe`, or into `%LOCALAPPDATA%\MyWarp` for an installed copy. Existing profiles migrate automatically when the destination folder is missing or empty; a copied `Configurations` folder takes precedence.
+`Configurations` contains files the app reads and writes directly: `settings.toml` for appearance, shortcuts and agent profiles; `themes/` for custom themes and assets; `providers/opencode.jsonc` for providers, models and MCP servers; `providers/keys/` for API-key files; and agent preferences and personal instructions. Copy this folder beside another portable executable or into `%LOCALAPPDATA%\MyWarp` for an installed copy. Close MyWarp and OpenCode first. Databases, history, caches, logs, downloaded tools and sign-in sessions stay in `Runtime`. The old combined profile is split automatically, preserving existing copied configuration.
 
 The installed executable goes under `%LOCALAPPDATA%\Programs\MyWarp`. Distributed packages contain fresh profiles without credentials from the build computer. Existing OpenCode configuration and sign-ins are imported into a fresh application profile on first GUI launch.
 

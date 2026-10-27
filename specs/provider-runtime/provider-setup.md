@@ -38,18 +38,20 @@ Add a remote server URL or select a local command. For a local server, enter the
 
 ## Files and profile locations
 
-Portable applications use the `Configurations` directory beside the executable. Installed applications use `%LOCALAPPDATA%\MyWarp\Configurations`. The executable and provider runtime use the same profile. Close both before copying this entire folder to transfer settings and provider connections. Legacy profiles migrate automatically when `Configurations` is absent or empty; existing copied configurations are preserved.
+Portable applications read configuration files from `Configurations` beside the executable. Installed applications read `%LOCALAPPDATA%\MyWarp\Configurations`. Copy only this directory to transfer settings, themes, providers and profiles; no runtime database is required. Close MyWarp and OpenCode first. Generated files and provider sign-in sessions are stored separately in `Runtime`. Older combined profiles are split automatically and existing copied configuration is preserved.
 
-Relative to that profile:
+Relative to `Configurations`:
 
 | File or folder | Purpose |
 | --- | --- |
-| `providers/config/opencode/opencode.jsonc` | Provider/model defaults, profiles and MCP configuration |
-| `providers/config/opencode/keys/` | Separate API-key files referenced by configuration |
-| `providers/data/opencode/auth.json` | Provider sign-ins, when present |
+| `settings.toml` | Appearance, shortcuts and native execution profiles |
+| `themes/` | Custom themes and their assets |
+| `providers/opencode.jsonc` | Provider/model defaults, provider agent profiles and MCP configuration |
+| `providers/keys/` | Separate API-key files referenced by configuration |
 | `agent-preferences.json` | Native agent mode and enforced tool policy |
 | `agent-instructions.md` | Personal instructions entered in Settings |
-| `logs/provider-runtime.log` | Settings runtime startup diagnostics |
+
+Provider sign-ins are in `Runtime/providers/data/opencode/auth.json`; startup diagnostics are in `Runtime/logs/provider-runtime.log`. Runtime plugin dependencies and generated package files are also kept outside `Configurations`. Native provider edits update the canonical JSONC file while preserving comments; runtimes reload that file after changes. Personal instruction references use a runtime-provided configuration path variable rather than a machine-specific absolute path.
 
 First launch imports an existing OpenCode configuration into a fresh profile, including referenced key files and supported provider sign-ins. Existing application-specific configuration is retained. A failure to import an old configuration does not prevent opening the native form to repair the connection.
 

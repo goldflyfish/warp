@@ -125,7 +125,7 @@ mod windows_check {
                     TestStep::new("Verify saved configuration")
                         .add_assertion(move |app, window| {
                             let config = std::fs::read_to_string(
-                                profile.join("providers/config/opencode/opencode.jsonc"),
+                                profile.join("Configurations/providers/opencode.jsonc"),
                             )
                             .unwrap_or_default();
                             if form_is_ready(app, window)
@@ -193,7 +193,7 @@ mod windows_check {
                 TestStep::new("Wait for the profile to be saved").add_assertion(
                     move |app, window| {
                         let config = std::fs::read_to_string(
-                            profile.join("providers/config/opencode/opencode.jsonc"),
+                            profile.join("Configurations/providers/opencode.jsonc"),
                         )
                         .unwrap_or_default();
                         if form_is_ready(app, window) && config.contains("UI_REVIEW_PROFILE") {
@@ -216,9 +216,10 @@ mod windows_check {
             .with_step(
                 TestStep::new("Wait for the custom default profile")
                     .add_assertion(move |app, window| {
-                        let preferences =
-                            std::fs::read_to_string(profile.join("agent-preferences.json"))
-                                .unwrap_or_default();
+                        let preferences = std::fs::read_to_string(
+                            profile.join("Configurations/agent-preferences.json"),
+                        )
+                        .unwrap_or_default();
                         if form_is_ready(app, window) && preferences.contains("ui-review") {
                             AssertionOutcome::Success
                         } else {
@@ -265,7 +266,7 @@ mod windows_check {
                     TestStep::new("Wait for default model to be saved").add_assertion(
                         move |_, _| {
                             let config = std::fs::read_to_string(
-                                profile.join("providers/config/opencode/opencode.jsonc"),
+                                profile.join("Configurations/providers/opencode.jsonc"),
                             )
                             .unwrap_or_default();
                             if config.contains("custom-mywarp/ui-fixture") {

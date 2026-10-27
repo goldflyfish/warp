@@ -10,7 +10,7 @@ MyWarp AI uses OpenCode ACP and the provider/model selected in the native chat f
 
 Use Settings > Agents > AI providers to open provider setup or the configuration file. Provider setup opens a local OpenCode tab; use its /connect flow. Codex and Claude Code can also run as separately installed local agents using their supported logins. Native chat currently uses the OpenCode adapter; native dedicated Codex/Claude adapters are not implemented.
 
-Portable profile: Configurations beside MyWarp.exe. Installed profile: %LOCALAPPDATA%\MyWarp\Configurations. Provider configuration: providers/config/opencode/opencode.jsonc inside that profile. API keys can use {file:./keys/your-provider.key} or the runtime's supported environment variables.
+Portable configuration: Configurations beside MyWarp.exe. Installed configuration: %LOCALAPPDATA%\MyWarp\Configurations. Provider configuration: providers/opencode.jsonc inside that directory. Generated data lives separately under Runtime. API keys can use {file:./keys/your-provider.key} or the runtime's supported environment variables.
 
 ## Service policy
 

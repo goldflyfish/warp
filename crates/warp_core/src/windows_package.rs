@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use directories::BaseDirs;
 use jsonc_parser::ParseOptions;
 use jsonc_parser::cst::CstRootNode;
@@ -13,8 +13,11 @@ use crate::channel::ChannelState;
 pub const PORTABLE_MARKER: &str = "mywarp-portable";
 pub const INSTALLED_MARKER: &str = "mywarp-installed";
 pub const CONFIGURATIONS_DIR: &str = "Configurations";
+pub const PERSONAL_INSTRUCTIONS_REFERENCE: &str =
+    "{env:MYWARP_CONFIGURATIONS_DIR}/agent-instructions.md";
+pub const DEFAULT_SETTINGS: &str = "# MyWarp settings: appearance, shortcuts, and agent profiles.\n[agents.execution_profiles.default]\nname = \"Default\"\n";
 
-const MIGRATION_MARKER: &str = ".profile-migration-in-progress";
+const MIGRATION_MARKER: &str = ".configuration-layout-v2";
 
 enum Package {
     Portable(PathBuf),
@@ -55,9 +58,9 @@ static PACKAGE: LazyLock<Option<Package>> = LazyLock::new(|| {
 fn detect_package(executable: &Path, local_data: Option<&Path>) -> Option<Package> {
     let directory = executable.parent()?;
     if directory.join(PORTABLE_MARKER).is_file() {
-        Some(Package::Portable(directory.join(CONFIGURATIONS_DIR)))
+        Some(Package::Portable(directory.to_owned()))
     } else if directory.join(INSTALLED_MARKER).is_file() {
-        local_data.map(|data| Package::Installed(data.join("MyWarp").join(CONFIGURATIONS_DIR)))
+        local_data.map(|data| Package::Installed(data.join("MyWarp")))
     } else {
         None
     }
@@ -67,53 +70,168 @@ pub fn profile_dir() -> Option<&'static Path> {
     PACKAGE.as_ref().map(Package::profile_dir)
 }
 
+pub fn configuration_dir(profile: &Path) -> PathBuf {
+    profile.join(CONFIGURATIONS_DIR)
+}
+
+pub fn runtime_dir(profile: &Path) -> PathBuf {
+    profile.join("Runtime")
+}
+
+pub fn provider_configuration_file(profile: &Path) -> PathBuf {
+    configuration_dir(profile).join("providers/opencode.jsonc")
+}
+
 pub fn prepare_profile() -> Result<()> {
     let Some(package) = PACKAGE.as_ref() else {
         return Ok(());
     };
     let profile = package.profile_dir();
-    let legacy = match package {
-        Package::Portable(_) => profile.with_file_name("profile"),
-        Package::Installed(_) => profile
-            .parent()
-            .context("The MyWarp profile has no parent")?
-            .to_owned(),
-    };
-    migrate_profile(&legacy, profile)?;
-    for name in ["config", "state", "data", "cache"] {
-        fs::create_dir_all(profile.join(name))?;
-    }
+    prepare_profile_at(profile)?;
     prepare_opencode_profile(profile)
+}
+
+fn prepare_profile_at(profile: &Path) -> Result<()> {
+    let runtime = runtime_dir(profile);
+    fs::create_dir_all(&runtime)?;
+    if !runtime.join(MIGRATION_MARKER).exists() {
+        migrate_profile(&profile.join("profile"), profile)?;
+        migrate_profile(&configuration_dir(profile), profile)?;
+        migrate_profile(profile, profile)?;
+        fs::write(runtime.join(MIGRATION_MARKER), "")?;
+    }
+    for name in ["config", "state", "data", "cache"] {
+        fs::create_dir_all(runtime.join(name))?;
+    }
+    fs::create_dir_all(configuration_dir(profile).join("themes"))?;
+    let settings = configuration_dir(profile).join("settings.toml");
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(settings)
+    {
+        Ok(mut file) => file.write_all(DEFAULT_SETTINGS.as_bytes())?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
 }
 
 fn migrate_profile(legacy: &Path, profile: &Path) -> Result<()> {
     if !legacy.is_dir() {
         return Ok(());
     }
-    let marker = profile.join(MIGRATION_MARKER);
-    if profile.is_dir() && !marker.is_file() && fs::read_dir(profile)?.next().is_some() {
+    let configurations = configuration_dir(profile);
+    let runtime = runtime_dir(profile);
+    for name in ["settings.toml", ".mcp.json", "skills"] {
+        copy_configuration(
+            &legacy.join("config").join(name),
+            &configurations.join(name),
+        )?;
+    }
+    for name in [
+        "themes",
+        "workflows",
+        "launch_configurations",
+        "tab_configs",
+        "custom_model_routers",
+    ] {
+        copy_configuration(&legacy.join("data").join(name), &configurations.join(name))?;
+    }
+    let provider = legacy.join("providers/config/opencode");
+    for name in ["opencode.jsonc", "keys", "agents", "commands", "plugins"] {
+        copy_configuration(
+            &provider.join(name),
+            &configurations.join("providers").join(name),
+        )?;
+    }
+    for name in ["agent-preferences.json", "agent-instructions.md"] {
+        copy_configuration(&legacy.join(name), &configurations.join(name))?;
+    }
+    move_runtime(
+        &legacy.join(".profile-migration-in-progress"),
+        &runtime.join("legacy-migration-marker"),
+    )?;
+    for name in [
+        "state",
+        "cache",
+        "data",
+        "logs",
+        "provider-check",
+        "config",
+        "providers/data",
+        "providers/cache",
+        "providers/state",
+        "providers/config",
+    ] {
+        let destination = if name == "providers/config" {
+            runtime.join("legacy-provider-config")
+        } else {
+            runtime.join(name)
+        };
+        move_runtime(&legacy.join(name), &destination)?;
+    }
+    if legacy == profile.join("profile") && legacy.is_dir() {
+        move_runtime(legacy, &runtime.join("legacy-profile"))?;
+    }
+    Ok(())
+}
+
+fn copy_configuration(source: &Path, destination: &Path) -> Result<()> {
+    if source == destination || !source.exists() {
         return Ok(());
     }
-    fs::create_dir_all(profile).context("Could not create the Configurations folder")?;
-    fs::write(&marker, "").context("Could not start migrating the MyWarp profile")?;
-    for entry in fs::read_dir(legacy)? {
-        let entry = entry?;
-        if entry.path() == profile {
-            continue;
+    if source.is_dir() {
+        fs::create_dir_all(destination)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            copy_configuration(&entry.path(), &destination.join(entry.file_name()))?;
         }
-        let destination = profile.join(entry.file_name());
-        if destination.try_exists()? {
-            bail!(
-                "A file in Configurations conflicts with the unfinished profile migration. Keep the desired file and remove its duplicate from the old profile before retrying."
-            );
-        }
-        fs::rename(entry.path(), destination)
-            .context("Could not move the existing MyWarp profile into Configurations. Close MyWarp and OpenCode before retrying.")?;
+    } else if !destination.exists() || is_default_configuration(destination) {
+        fs::create_dir_all(
+            destination
+                .parent()
+                .context("Configuration has no parent")?,
+        )?;
+        fs::copy(source, destination)?;
     }
-    if legacy != profile.parent().unwrap_or(profile) {
-        fs::remove_dir(legacy).context("Could not remove the empty legacy profile folder")?;
+    Ok(())
+}
+
+fn is_default_configuration(path: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    if path.file_name().is_some_and(|name| name == "settings.toml") {
+        return text == DEFAULT_SETTINGS;
     }
-    fs::remove_file(marker).context("Could not finish migrating the MyWarp profile")?;
+    path.file_name()
+        .is_some_and(|name| name == "opencode.jsonc")
+        && serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|value| value.as_object().cloned())
+            .is_some_and(|object| object.keys().all(|key| key == "$schema"))
+}
+
+fn move_runtime(source: &Path, destination: &Path) -> Result<()> {
+    if !source.exists() || source == destination {
+        return Ok(());
+    }
+    fs::create_dir_all(destination.parent().context("Runtime data has no parent")?)?;
+    let mut target = destination.to_owned();
+    let mut suffix = 0;
+    while target.exists() {
+        suffix += 1;
+        target = destination.with_file_name(format!(
+            "{}.legacy-{suffix}",
+            destination
+                .file_name()
+                .context("Runtime data has no name")?
+                .to_string_lossy()
+        ));
+    }
+    fs::rename(source, target)
+        .context("Could not migrate runtime data. Close MyWarp and OpenCode before retrying.")?;
     Ok(())
 }
 
@@ -125,26 +243,43 @@ pub fn instance_namespace() -> String {
 }
 
 pub fn opencode_environment(profile: &Path) -> Vec<(&'static str, PathBuf)> {
-    let root = profile.join("providers");
+    let root = runtime_dir(profile).join("providers");
     let config = root.join("config").join("opencode");
     vec![
         ("XDG_CONFIG_HOME", root.join("config")),
         ("XDG_DATA_HOME", root.join("data")),
         ("XDG_CACHE_HOME", root.join("cache")),
         ("XDG_STATE_HOME", root.join("state")),
-        ("OPENCODE_CONFIG", config.join("opencode.jsonc")),
+        ("OPENCODE_CONFIG", provider_configuration_file(profile)),
         ("OPENCODE_CONFIG_DIR", config),
+        (
+            "MYWARP_CONFIGURATIONS_DIR",
+            jsonc_environment_path(&configuration_dir(profile)),
+        ),
     ]
 }
 
+fn jsonc_environment_path(path: &Path) -> PathBuf {
+    // OpenCode substitutes environment values before parsing JSONC.
+    let path = path.to_string_lossy();
+    let path = if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        format!("//{unc}")
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned()
+    };
+    PathBuf::from(path.replace('\\', "/"))
+}
+
 pub fn prepare_opencode_profile(profile: &Path) -> Result<()> {
-    let root = profile.join("providers");
-    let config = root.join("config").join("opencode");
+    prepare_profile_at(profile)?;
+    let root = runtime_dir(profile).join("providers");
+    let config = configuration_dir(profile).join("providers");
     for directory in [
         &config,
         &root.join("data"),
         &root.join("cache"),
         &root.join("state"),
+        &root.join("config/opencode"),
     ] {
         fs::create_dir_all(directory).context("Could not create the MyWarp provider profile")?;
     }
@@ -160,7 +295,7 @@ pub fn prepare_opencode_profile(profile: &Path) -> Result<()> {
 }
 
 fn rebase_personal_instructions(profile: &Path, config: &Path) -> Result<()> {
-    let instructions = profile.join("agent-instructions.md");
+    let instructions = configuration_dir(profile).join("agent-instructions.md");
     if !instructions.is_file() {
         return Ok(());
     }
@@ -197,9 +332,8 @@ fn rebase_personal_instructions(profile: &Path, config: &Path) -> Result<()> {
                 .file_name()
                 .is_some_and(|name| name == "agent-instructions.md")
             && managed_profile
-            && path != instructions
         {
-            value.set_raw_value(serde_json::to_string(&instructions.to_string_lossy())?);
+            value.set_raw_value(serde_json::to_string(PERSONAL_INSTRUCTIONS_REFERENCE)?);
             changed = true;
         }
     }
@@ -244,9 +378,9 @@ pub fn import_existing_opencode_profile(profile: &Path) -> Result<()> {
 }
 
 fn import_opencode_configuration(profile: &Path, source: Option<&Path>, auth: &Path) -> Result<()> {
-    let config_dir = profile.join("providers/config/opencode");
+    let config_dir = configuration_dir(profile).join("providers");
     let destination = config_dir.join("opencode.jsonc");
-    let auth_destination = profile.join("providers/data/opencode/auth.json");
+    let auth_destination = runtime_dir(profile).join("providers/data/opencode/auth.json");
     if auth.is_file() && !auth_destination.exists() {
         fs::create_dir_all(auth_destination.parent().expect("auth parent"))?;
         fs::copy(auth, auth_destination).context("Could not import existing provider sign-ins")?;

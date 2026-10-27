@@ -172,19 +172,27 @@ Existing outputs are refused rather than replaced; build-machine profiles and cr
 never packaging inputs. See [Windows packaging](windows-packaging.md) for flags and prerequisites.
 
 `warp_core::windows_package` detects `mywarp-portable` or `mywarp-installed` beside the running
-executable. Portable profiles live in the adjacent `Configurations` directory. Installed profiles live
-in the Windows known Local AppData folder under `MyWarp/Configurations`. Config, data, state and cache helpers,
-including home-style Warp config, use that profile. Executables without a marker retain their
+executable. Portable application roots are the executable directory; installed application roots are
+the Windows known Local AppData folder under `MyWarp`. Both have separate `Configurations` and
+`Runtime` directories. Public settings, themes, workflows, skills and profiles use Configurations;
+state, caches, installed language tools and private file-backed preferences use Runtime.
+Executables without a marker retain their
 existing paths. Single-instance mutexes and URI pipes use distinct installed/portable namespaces.
 
-Package initialization migrates legacy profiles before opening configuration files. A nonempty
-`Configurations` folder takes precedence over legacy data. Interrupted migrations resume using a
-marker and never overwrite conflicting files. The OpenCode shim invokes `MyWarp.exe --prepare-profile`
+Package initialization extracts declarative files from legacy combined profiles and moves generated
+data into Runtime, retaining conflicting legacy data there. Copied configuration takes precedence over
+legacy files; unchanged shipped defaults can be replaced by existing settings during migration.
+The OpenCode shim invokes `MyWarp.exe --prepare-profile`
 so launching the runtime directly uses the same initialization and migration as the GUI.
 
 The OSS entry point initializes a fresh profile before starting threads, and adds the bundled
 OpenCode shim to its process PATH. Native chats resolve the bundled native executable directly.
-Both native and terminal OpenCode launches use profile-scoped XDG/config directories; inherited
+OpenCode's XDG directories and OPENCODE_CONFIG_DIR point into Runtime so dependency installation
+cannot pollute the copied configuration. OPENCODE_CONFIG points directly at the canonical
+Configurations/providers/opencode.jsonc. Native Settings reads and patches that JSONC file and
+restarts its worker to reload it, rather than writing OpenCode's separate generated global config.
+MYWARP_CONFIGURATIONS_DIR uses forward slashes because OpenCode substitutes it before JSONC parsing.
+Both native and terminal OpenCode launches use application-scoped XDG directories; inherited
 inline OpenCode config is discarded for packaged launches. The native worker still forces
 attended `permission: ask`. Existing provider config is preserved, and provider API-key
 environment variables remain supported. The installer registers per-user shortcuts and an

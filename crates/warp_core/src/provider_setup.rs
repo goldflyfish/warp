@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, bail};
 use futures::channel::oneshot;
 use jsonc_parser::ParseOptions;
-use jsonc_parser::cst::CstRootNode;
+use jsonc_parser::cst::{CstInputValue, CstObject, CstRootNode};
 use reqwest::Method;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -38,6 +38,76 @@ pub fn profile_dir() -> Result<PathBuf> {
     let base =
         directories::BaseDirs::new().context("Your application data folder is unavailable")?;
     Ok(base.data_local_dir().join("MyWarp"))
+}
+
+pub fn configuration_file(profile: &Path) -> PathBuf {
+    windows_package::provider_configuration_file(profile)
+}
+
+fn configuration(profile: &Path) -> Result<Value> {
+    let text = fs::read_to_string(configuration_file(profile))?;
+    let value = jsonc_parser::parse_to_serde_value::<Value>(&text, &ParseOptions::default())?;
+    if !value.is_object() {
+        bail!("The provider configuration must be an object");
+    }
+    Ok(value)
+}
+
+fn patch_configuration(profile: &Path, patch: Value) -> Result<()> {
+    let path = configuration_file(profile);
+    let original = fs::read_to_string(&path)?;
+    let root = CstRootNode::parse(&original, &ParseOptions::default())?;
+    let object = root
+        .object_value()
+        .context("The provider configuration must be an object")?;
+    let patch = patch
+        .as_object()
+        .context("The provider update must be an object")?;
+    patch_object(&object, patch);
+    let mut temporary = tempfile::NamedTempFile::new_in(
+        path.parent()
+            .context("The provider folder is unavailable")?,
+    )?;
+    temporary.write_all(root.to_string().as_bytes())?;
+    if fs::read_to_string(&path)? != original {
+        bail!("The configuration changed during editing. Refresh and try again.");
+    }
+    temporary
+        .persist(path)
+        .context("The provider configuration could not be saved")?;
+    Ok(())
+}
+
+fn patch_object(object: &CstObject, patch: &serde_json::Map<String, Value>) {
+    for (name, value) in patch {
+        if let Value::Object(properties) = value {
+            patch_object(&object.object_value_or_set(name), properties);
+        } else if value.is_null() {
+            if let Some(property) = object.get(name) {
+                property.remove();
+            }
+        } else if let Some(property) = object.get(name) {
+            property.set_value(config_value(value));
+        } else {
+            object.append(name, config_value(value));
+        }
+    }
+}
+
+fn config_value(value: &Value) -> CstInputValue {
+    match value {
+        Value::Null => CstInputValue::Null,
+        Value::Bool(value) => CstInputValue::Bool(*value),
+        Value::Number(value) => CstInputValue::Number(value.to_string()),
+        Value::String(value) => CstInputValue::String(value.clone()),
+        Value::Array(values) => CstInputValue::Array(values.iter().map(config_value).collect()),
+        Value::Object(values) => CstInputValue::Object(
+            values
+                .iter()
+                .map(|(name, value)| (name.clone(), config_value(value)))
+                .collect(),
+        ),
+    }
 }
 
 pub fn runtime_executable() -> PathBuf {
@@ -139,13 +209,13 @@ impl ProviderServer {
         port: u16,
         password: &str,
     ) -> Result<std::process::Child> {
-        let workspace = profile.join("provider-check");
+        let workspace = windows_package::runtime_dir(profile).join("provider-check");
         fs::create_dir_all(&workspace)?;
-        fs::create_dir_all(profile.join("logs"))?;
+        fs::create_dir_all(windows_package::runtime_dir(profile).join("logs"))?;
         let log = fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(profile.join("logs/provider-runtime.log"))?;
+            .open(windows_package::runtime_dir(profile).join("logs/provider-runtime.log"))?;
         let mut command = command::blocking::Command::new(executable);
         command.creation_flags(0);
         command
@@ -244,7 +314,7 @@ impl ProviderServer {
 
     pub fn snapshot(&self) -> Result<Snapshot> {
         let providers = self.request(Method::GET, "/provider", None)?;
-        let config = self.request(Method::GET, "/global/config", None)?;
+        let config = configuration(&self.profile)?;
         let methods = self.request(Method::GET, "/provider/auth", None)?;
         let mut result = snapshot(&providers, &config, &methods)?;
         let agents = self.request(Method::GET, "/agent", None)?;
@@ -272,7 +342,8 @@ impl ProviderServer {
     }
 
     pub fn patch(&self, patch: Value) -> Result<Snapshot> {
-        self.request(Method::PATCH, "/global/config", Some(&patch))?;
+        patch_configuration(&self.profile, patch)?;
+        self.restart()?;
         self.snapshot()
     }
 
@@ -281,9 +352,7 @@ impl ProviderServer {
             bail!("This configuration section cannot be removed here.");
         }
         validate_provider_id(name)?;
-        let path = self
-            .profile
-            .join("providers/config/opencode/opencode.jsonc");
+        let path = self.profile.join("Configurations/providers/opencode.jsonc");
         let original = fs::read_to_string(&path)?;
         let root = CstRootNode::parse(&original, &ParseOptions::default())
             .context("The provider configuration could not be read for editing")?;
@@ -320,7 +389,7 @@ impl ProviderServer {
     ) -> Result<Snapshot> {
         validate_provider_id(id)?;
         validate_endpoint(endpoint)?;
-        let mut config = self.request(Method::GET, "/global/config", None)?;
+        let mut config = configuration(&self.profile)?;
         let mut provider = json!({"options":{}});
         if !endpoint.trim().is_empty() {
             provider["options"]["baseURL"] = endpoint.trim().into();
@@ -338,7 +407,7 @@ impl ProviderServer {
         let previous_key = self.stored_key_reference(id)?;
         let mut created = None;
         if !key.trim().is_empty() {
-            let directory = self.profile.join("providers/config/opencode/keys");
+            let directory = self.profile.join("Configurations/providers/keys");
             fs::create_dir_all(&directory)?;
             let name = format!("mywarp-{id}-{}.key", Uuid::new_v4());
             let path = directory.join(&name);
@@ -362,16 +431,11 @@ impl ProviderServer {
                 items.clone()
             })
             .unwrap_or_default();
-        let result = self.request(
-            Method::PATCH,
-            "/global/config",
-            Some(&json!({"provider":{id:provider},"disabled_providers":disabled})),
-        );
+        let result = self.patch(json!({"provider":{id:provider},"disabled_providers":disabled}));
         if let Err(error) = result {
             if let Some(path) = created {
                 let current = fs::read_to_string(
-                    self.profile
-                        .join("providers/config/opencode/opencode.jsonc"),
+                    self.profile.join("Configurations/providers/opencode.jsonc"),
                 )
                 .unwrap_or_default();
                 if path
@@ -390,10 +454,8 @@ impl ProviderServer {
     }
 
     fn stored_key_reference(&self, id: &str) -> Result<Option<String>> {
-        let text = fs::read_to_string(
-            self.profile
-                .join("providers/config/opencode/opencode.jsonc"),
-        )?;
+        let text =
+            fs::read_to_string(self.profile.join("Configurations/providers/opencode.jsonc"))?;
         let root = CstRootNode::parse(&text, &ParseOptions::default())
             .context("The provider configuration could not be read")?;
         Ok(root
@@ -409,7 +471,7 @@ impl ProviderServer {
 
     pub fn disconnect(&self, id: &str) -> Result<Snapshot> {
         validate_provider_id(id)?;
-        let config = self.request(Method::GET, "/global/config", None)?;
+        let config = configuration(&self.profile)?;
         let mut disabled = config["disabled_providers"]
             .as_array()
             .cloned()
@@ -443,7 +505,7 @@ impl ProviderServer {
         {
             let _ = fs::remove_file(
                 self.profile
-                    .join("providers/config/opencode/keys")
+                    .join("Configurations/providers/keys")
                     .join(name),
             );
         }
@@ -465,7 +527,7 @@ impl ProviderServer {
             &format!("/provider/{id}/oauth/callback"),
             Some(&json!({"method":method,"code":code})),
         )?;
-        let config = self.request(Method::GET, "/global/config", None)?;
+        let config = configuration(&self.profile)?;
         let disabled: Vec<_> = config["disabled_providers"]
             .as_array()
             .into_iter()
@@ -529,15 +591,15 @@ impl ProviderServer {
     }
 
     pub fn save_instructions(&self, text: &str) -> Result<Snapshot> {
-        let file = self.profile.join("agent-instructions.md");
+        let file = windows_package::configuration_dir(&self.profile).join("agent-instructions.md");
         fs::write(&file, text).context("The agent instructions could not be saved")?;
-        let config = self.request(Method::GET, "/global/config", None)?;
+        let config = configuration(&self.profile)?;
         let mut paths = config["instructions"]
             .as_array()
             .cloned()
             .unwrap_or_default();
-        let file = file.to_string_lossy().into_owned();
-        if !paths.iter().any(|p| p.as_str() == Some(&file)) {
+        let file = windows_package::PERSONAL_INSTRUCTIONS_REFERENCE;
+        if !paths.iter().any(|p| p.as_str() == Some(file)) {
             paths.push(file.into());
         }
         self.patch(json!({"instructions":paths}))
@@ -662,12 +724,13 @@ pub fn write_agent_override(name: &str, value: Value) -> Result<()> {
     let profile = profile_dir()?;
     let mut config = read_agent_overrides(&profile)?;
     config[name] = value;
-    fs::create_dir_all(&profile)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(&profile)?;
+    let directory = windows_package::configuration_dir(&profile);
+    fs::create_dir_all(&directory)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
 
     temporary.write_all(&serde_json::to_vec_pretty(&config)?)?;
     temporary
-        .persist(profile.join("agent-preferences.json"))
+        .persist(directory.join("agent-preferences.json"))
         .context("Could not save the agent preferences")?;
     Ok(())
 }
@@ -692,7 +755,7 @@ fn tool_permissions(policy: &str) -> Result<Value> {
 }
 
 fn read_agent_overrides(profile: &Path) -> Result<Value> {
-    match fs::read(profile.join("agent-preferences.json")) {
+    match fs::read(windows_package::configuration_dir(profile).join("agent-preferences.json")) {
         Ok(bytes)=>serde_json::from_slice(&bytes).context("The agent preferences are invalid. Correct agent-preferences.json before reconnecting."),
         Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(json!({})),
         Err(error)=>Err(error).context("Could not read the agent preferences"),

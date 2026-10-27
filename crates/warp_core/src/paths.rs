@@ -66,7 +66,7 @@ pub fn warp_home_config_dir_name() -> String {
 pub fn warp_home_config_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     if let Some(profile) = crate::windows_package::profile_dir() {
-        return Some(profile.join("config"));
+        return Some(crate::windows_package::configuration_dir(profile));
     }
     dirs::home_dir().map(|home_dir| home_dir.join(warp_home_config_dir_name()))
 }
@@ -123,7 +123,7 @@ fn macos_config_dir_name_for(channel: Channel, data_profile: Option<&str>) -> St
 pub fn data_dir() -> PathBuf {
     #[cfg(windows)]
     if let Some(profile) = crate::windows_package::profile_dir() {
-        return profile.join("data");
+        return crate::windows_package::runtime_dir(profile).join("data");
     }
     cfg_if! {
         if #[cfg(target_os = "macos")] {
@@ -163,7 +163,7 @@ fn gui_app_id() -> AppId {
 pub fn config_local_dir() -> PathBuf {
     #[cfg(windows)]
     if let Some(profile) = crate::windows_package::profile_dir() {
-        return profile.join("config");
+        return crate::windows_package::configuration_dir(profile);
     }
     cfg_if! {
         if #[cfg(target_os = "macos")] {
@@ -188,7 +188,7 @@ pub fn config_local_dir() -> PathBuf {
 pub fn gui_config_local_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     if let Some(profile) = crate::windows_package::profile_dir() {
-        return Some(profile.join("config"));
+        return Some(crate::windows_package::configuration_dir(profile));
     }
     cfg_if! {
         if #[cfg(target_os = "macos")] {
@@ -276,7 +276,7 @@ pub fn base_config_dir() -> PathBuf {
 pub fn state_dir() -> PathBuf {
     #[cfg(windows)]
     if let Some(profile) = crate::windows_package::profile_dir() {
-        return profile.join("state");
+        return crate::windows_package::runtime_dir(profile).join("state");
     }
     let Some(project_dirs) = project_dirs() else {
         return PathBuf::new();
@@ -329,7 +329,24 @@ pub fn tui_state_dir() -> PathBuf {
 
 /// Returns the path to the directory containing the user's custom themes.
 pub fn themes_dir() -> PathBuf {
-    data_dir().join("themes")
+    user_config_dir().join("themes")
+}
+
+/// Returns the directory for user-authored themes, workflows, and launch configurations.
+pub fn user_config_dir() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(profile) = crate::windows_package::profile_dir() {
+        return crate::windows_package::configuration_dir(profile);
+    }
+    data_dir()
+}
+
+pub fn private_config_local_dir() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(profile) = crate::windows_package::profile_dir() {
+        return crate::windows_package::runtime_dir(profile).join("config");
+    }
+    config_local_dir()
 }
 
 /// Returns the path to the directory where files can be stored for caching
@@ -341,7 +358,7 @@ pub fn themes_dir() -> PathBuf {
 pub fn cache_dir() -> PathBuf {
     #[cfg(windows)]
     if let Some(profile) = crate::windows_package::profile_dir() {
-        return profile.join("cache");
+        return crate::windows_package::runtime_dir(profile).join("cache");
     }
     let Some(project_dirs) = project_dirs() else {
         return PathBuf::new();

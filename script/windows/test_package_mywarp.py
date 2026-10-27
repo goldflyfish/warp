@@ -67,11 +67,14 @@ class PackagingTests(unittest.TestCase):
         self.assertTrue((folder / 'mywarp-portable').is_file())
         self.assertFalse((folder / 'mywarp-installed').exists())
         self.assertTrue((folder / 'tools/opencode/LICENSE.txt').is_file())
-        self.assertEqual(list((folder / 'Configurations').iterdir()), [])
+        self.assertEqual((folder / 'Configurations/settings.toml').read_text(), packaging.DEFAULT_SETTINGS)
+        self.assertTrue((folder / 'Configurations/themes').is_dir())
+        self.assertFalse((folder / 'Runtime').exists())
         self.assertFalse((folder / 'profile').exists())
         manifest = json.loads((folder / 'package-manifest.json').read_text())
-        self.assertEqual(manifest['profile'], 'Configurations')
-        config = folder / 'resources/provider-config/opencode.jsonc'
+        self.assertEqual(manifest['configuration'], 'Configurations')
+        self.assertEqual(manifest['runtime'], 'Runtime')
+        config = folder / 'Configurations/providers/opencode.jsonc'
         self.assertEqual(json.loads(config.read_text()), packaging.DEFAULT_CONFIG)
         with zipfile.ZipFile(self.output / (folder.name + '.zip')) as archive:
             self.assertIn(folder.name + '/MyWarp.exe', archive.namelist())
@@ -125,7 +128,8 @@ class PackagingTests(unittest.TestCase):
         self.assertFalse((payload / 'profile').exists())
         self.assertFalse((payload / 'Configurations').exists())
         wrapper = (payload / 'tools/bin/opencode.cmd').read_text()
-        self.assertIn('%LOCALAPPDATA%\\MyWarp\\Configurations', wrapper)
+        self.assertIn('set "MYWARP_CONFIGURATIONS_DIR=%MYWARP_PROFILE%\\Configurations"', wrapper)
+        self.assertIn('set "XDG_CONFIG_HOME=%MYWARP_PROFILE%\\Runtime\\providers\\config"', wrapper)
         self.assertIn('"%MYWARP_PACKAGE%\\MyWarp.exe" --prepare-profile', wrapper)
         self.assertIn('set "OPENCODE_CONFIG_CONTENT="', wrapper)
 

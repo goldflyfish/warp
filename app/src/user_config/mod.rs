@@ -191,7 +191,7 @@ impl WarpConfig {
 
 /// Returns the base directory in which all of the user's data is stored.
 fn base_dir() -> PathBuf {
-    warp_core::paths::data_dir()
+    warp_core::paths::user_config_dir()
 }
 
 /// Returns the path to the directory containing the user's custom themes.

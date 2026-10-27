@@ -54,12 +54,13 @@ fn provider_setup_permissions_enforce_read_only_and_review_policy() {
 #[test]
 fn provider_setup_chat_loads_saved_behavior_and_fails_closed_on_invalid_policy() {
     let profile = tempfile::tempdir().unwrap();
+    windows_package::prepare_opencode_profile(profile.path()).unwrap();
     assert_eq!(
         runtime_overrides(profile.path()).unwrap()["permission"],
         "ask"
     );
     fs::write(
-        profile.path().join("agent-preferences.json"),
+        profile.path().join("Configurations/agent-preferences.json"),
         r#"{"tool_policy":"readonly","default_agent":"plan"}"#,
     )
     .unwrap();
@@ -67,7 +68,7 @@ fn provider_setup_chat_loads_saved_behavior_and_fails_closed_on_invalid_policy()
     assert_eq!(config["permission"]["*"], "deny");
     assert_eq!(config["default_agent"], "plan");
     fs::write(
-        profile.path().join("agent-preferences.json"),
+        profile.path().join("Configurations/agent-preferences.json"),
         r#"{"tool_policy":"allow-everything"}"#,
     )
     .unwrap();
@@ -109,7 +110,7 @@ fn provider_setup_real_runtime_saves_tests_rotates_and_disconnects_api_keys() {
     fs::write(
         profile
             .path()
-            .join("providers/config/opencode/opencode.jsonc"),
+            .join("Configurations/providers/opencode.jsonc"),
         "{\n// keep this comment\n\"$schema\":\"https://opencode.ai/config.json\"\n}\n",
     )
     .unwrap();
@@ -133,14 +134,14 @@ fn provider_setup_real_runtime_saves_tests_rotates_and_disconnects_api_keys() {
     );
     let config_path = profile
         .path()
-        .join("providers/config/opencode/opencode.jsonc");
+        .join("Configurations/providers/opencode.jsonc");
     let config = fs::read_to_string(&config_path).unwrap();
     assert!(config.contains("keep this comment"));
     assert!(!config.contains("fixture-valid-key"));
     assert!(
         !profile
             .path()
-            .join("providers/data/opencode/auth.json")
+            .join("Runtime/providers/data/opencode/auth.json")
             .exists()
     );
     server
@@ -172,7 +173,7 @@ fn provider_setup_real_runtime_saves_tests_rotates_and_disconnects_api_keys() {
     assert!(!error.contains("do-not-expose"));
     assert!(!error.contains("fixture-invalid-key"));
     rejected.assert();
-    let keys = fs::read_dir(profile.path().join("providers/config/opencode/keys"))
+    let keys = fs::read_dir(profile.path().join("Configurations/providers/keys"))
         .unwrap()
         .count();
     assert_eq!(
@@ -187,7 +188,7 @@ fn provider_setup_real_runtime_saves_tests_rotates_and_disconnects_api_keys() {
             .any(|p| p.id == "custom-fixture" && p.connected)
     );
     assert_eq!(
-        fs::read_dir(profile.path().join("providers/config/opencode/keys"))
+        fs::read_dir(profile.path().join("Configurations/providers/keys"))
             .unwrap()
             .count(),
         0
@@ -218,4 +219,111 @@ fn provider_setup_real_openrouter_answers_through_the_native_settings_backend() 
     server
         .test_connection("openrouter", "openai/gpt-4.1-mini")
         .unwrap();
+}
+
+#[test]
+fn provider_edits_update_the_portable_file_without_creating_a_runtime_config() {
+    let profile = tempfile::tempdir().unwrap();
+    windows_package::prepare_opencode_profile(profile.path()).unwrap();
+    let path = configuration_file(profile.path());
+    fs::write(&path, "{\n// keep this comment\n\"model\":\"fixture/original\",\"provider\":{\"fixture\":{\"options\":{\"baseURL\":\"http://localhost:1234\",\"apiKey\":\"{file:./keys/test.key}\"}}}}\n").unwrap();
+
+    patch_configuration(
+        profile.path(),
+        json!({"model":"fixture/updated","provider":{"fixture":{"options":{"baseURL":null}}}}),
+    )
+    .unwrap();
+
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("// keep this comment"));
+    let saved = configuration(profile.path()).unwrap();
+    assert_eq!(saved["model"], "fixture/updated");
+    assert_eq!(
+        saved["provider"]["fixture"]["options"]["apiKey"],
+        "{file:./keys/test.key}"
+    );
+    assert!(
+        saved["provider"]["fixture"]["options"]
+            .get("baseURL")
+            .is_none()
+    );
+    assert!(
+        !profile
+            .path()
+            .join("Runtime/providers/config/opencode/opencode.jsonc")
+            .exists()
+    );
+}
+
+#[cfg(feature = "test-util")]
+#[test]
+#[ignore = "requires the bundled OpenCode executable in MYWARP_TEST_OPENCODE"]
+fn copied_provider_configuration_works_with_a_fresh_runtime() {
+    let executable =
+        PathBuf::from(std::env::var_os("MYWARP_TEST_OPENCODE").expect("Set MYWARP_TEST_OPENCODE"));
+    let mut fixture = mockito::Server::new();
+    let success = fixture.mock("POST", "/v1/chat/completions")
+        .match_header("authorization", "Bearer portable-fixture-key")
+        .with_status(200).with_header("content-type", "text/event-stream")
+        .with_body(concat!(
+            "data: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"fixture-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"OK\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"fixture-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"))
+        .expect_at_least(1).create();
+    let source = tempfile::tempdir().unwrap();
+    let server =
+        ProviderServer::start_inner(source.path().into(), executable.clone(), false).unwrap();
+    server
+        .save_provider(
+            "custom-portable",
+            "portable-fixture-key",
+            &format!("{}/v1", fixture.url()),
+            "fixture-model",
+        )
+        .unwrap();
+    server.patch(json!({"model":"custom-portable/fixture-model", "agent":{"reviewer":{"mode":"primary","prompt":"Review carefully."}}})).unwrap();
+    server
+        .save_instructions("Use the copied instructions.")
+        .unwrap();
+    drop(server);
+    let source_configuration = windows_package::configuration_dir(source.path());
+    let copied = tempfile::tempdir().unwrap();
+    let destination = windows_package::configuration_dir(copied.path());
+    fs::create_dir_all(destination.join("providers/keys")).unwrap();
+    fs::copy(
+        source_configuration.join("providers/opencode.jsonc"),
+        destination.join("providers/opencode.jsonc"),
+    )
+    .unwrap();
+    fs::copy(
+        source_configuration.join("agent-instructions.md"),
+        destination.join("agent-instructions.md"),
+    )
+    .unwrap();
+    for entry in fs::read_dir(source_configuration.join("providers/keys")).unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(
+            entry.path(),
+            destination.join("providers/keys").join(entry.file_name()),
+        )
+        .unwrap();
+    }
+    assert!(!copied.path().join("Runtime").exists());
+
+    let server = ProviderServer::start_inner(copied.path().into(), executable, false).unwrap();
+    let loaded = server.snapshot().unwrap();
+    assert_eq!(loaded.default_model, "custom-portable/fixture-model");
+    assert!(loaded.custom_agents.contains_key("reviewer"));
+    server
+        .test_connection("custom-portable", "fixture-model")
+        .unwrap();
+    success.assert();
+    let stored = fs::read_to_string(configuration_file(copied.path())).unwrap();
+    assert!(stored.contains("{file:./keys/"));
+    assert!(stored.contains(windows_package::PERSONAL_INSTRUCTIONS_REFERENCE));
+    assert!(!stored.contains(&source.path().to_string_lossy().to_string()));
+    assert!(!destination.join("providers/node_modules").exists());
+    assert!(!destination.join("providers/package.json").exists());
+    assert!(!destination.join("providers/.gitignore").exists());
+    assert!(!destination.join("Runtime").exists());
 }
