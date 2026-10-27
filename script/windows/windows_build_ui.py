@@ -23,6 +23,7 @@ class BuildUI:
         self.live = False
         self.last_progress = 0.0
         self.detail = "Starting"
+        self.detail_updated_at = self.started
         self.color = not plain and "NO_COLOR" not in os.environ and sys.stdout.isatty()
         if self.color and sys.platform == "win32":
             kernel = ctypes.windll.kernel32
@@ -55,6 +56,9 @@ class BuildUI:
         self.line("  +----------------------------------------------------------+", "36")
         self.line(f"  {self.mode.upper()}  /  {version}  /  Windows {arch}  /  {profile}", "1")
         self.line(f"  Build log: {self.log_path}", "90")
+        if profile == "release":
+            self.line("  Optimized builds can take tens of minutes.", "90")
+            self.line("  Faster development packages: add --profile dev", "90")
         self.line()
 
     def complete_step(self):
@@ -67,19 +71,25 @@ class BuildUI:
         self.current = {"number": number, "title": title, "status": "running", "start": time.monotonic(), "duration": 0}
         self.steps.append(self.current)
         self.detail = title
+        self.detail_updated_at = self.current["start"]
         self.last_progress = 0
         self.line(f"\n  [{number}/5] {title}", "1;36")
 
     def progress(self, detail: str | None = None):
+        now = time.monotonic()
         if detail and detail.strip():
             self.detail = detail.strip()
-        now = time.monotonic()
+            self.detail_updated_at = now
         if now - self.last_progress < (0.12 if self.color else 15):
             return
         self.last_progress = now
         elapsed = int(now - self.started)
         spinner = ("|", "/", "-", "\\")[int(now * 5) % 4]
-        message = f"  {spinner}  {elapsed // 60:02d}:{elapsed % 60:02d}  {self.detail[:95]}"
+        detail_text = self.detail
+        quiet_seconds = int(now - self.detail_updated_at)
+        if self.current and quiet_seconds >= 15:
+            detail_text = f"{self.current['title']} | no new output for {quiet_seconds}s"
+        message = f"  {spinner}  {elapsed // 60:02d}:{elapsed % 60:02d}  {detail_text[:95]}"
         if self.color:
             print("\r\033[2K" + self.paint(message, "36"), end="", flush=True)
             self.live = True

@@ -215,5 +215,21 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual(ui.detail, 'Compile Windows installer')
             ui.finish()
 
+    def test_stale_compiler_line_returns_to_stage_and_shows_quiet_duration(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), patch('windows_build_ui.time.monotonic', return_value=1000) as clock:
+            ui = BuildUI('portable', self.output, plain=True)
+            ui.step(2, 'Compile MyWarp')
+            ui.progress('Compiling asset_macro')
+            self.assertIn('Compiling asset_macro', output.getvalue())
+            output.seek(0)
+            output.truncate()
+            clock.return_value = 1020
+            ui.progress()
+            self.assertIn('Compile MyWarp | no new output for 20s', output.getvalue())
+            self.assertNotIn('asset_macro', output.getvalue())
+            ui.finish()
+
+
 if __name__ == '__main__':
     unittest.main()
