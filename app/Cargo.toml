@@ -18,6 +18,12 @@ path = "src/lib.rs"
 # flag overrides). Otherwise these binaries are exactly identical to our main binary.
 
 [[bin]]
+name = "provider-settings-check"
+path = "src/bin/provider-settings-check.rs"
+required-features = ["provider-settings-check"]
+test = false
+
+[[bin]]
 name = "warp-oss"
 path = "src/bin/oss.rs"
 test = false
@@ -462,6 +468,7 @@ embed-resource = "3.0"
 
 # Note that we support channel-specific enables for these features
 [features]
+provider-settings-check = ["warpui/integration_tests"]
 tui = ["warp_terminal/tui", "warpui_core/tui"]
 ai_resume_button = []
 autoupdate = []

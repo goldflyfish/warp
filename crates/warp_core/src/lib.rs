@@ -14,6 +14,8 @@ pub mod mywarp;
 pub mod operating_system_info;
 pub mod paths;
 pub mod platform;
+#[cfg(windows)]
+pub mod provider_setup;
 pub mod safe_log;
 pub mod semantic_selection;
 #[cfg(windows)]

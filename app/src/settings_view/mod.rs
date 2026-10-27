@@ -2963,6 +2963,13 @@ impl BackingView for SettingsView {
     }
 }
 
+#[cfg(all(windows, feature = "provider-settings-check"))]
+pub(crate) fn native_provider_setup_ready(app: &warpui::App, window: warpui::WindowId) -> bool {
+    app.views_of_type::<WarpAgentPageView>(window)
+        .and_then(|views| views.first().cloned())
+        .is_some_and(|view| view.read(app, |view, _| view.provider_setup_ready()))
+}
+
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod tests;

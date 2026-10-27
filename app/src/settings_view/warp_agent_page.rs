@@ -5,6 +5,8 @@
 //! Enterprise, custom endpoints, custom routers) and the miscellaneous
 //! agent display settings.
 
+#[cfg(windows)]
+mod provider_setup;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Not;
@@ -23,6 +25,8 @@ use ::ai::grok_subscription::oauth::{
 use chrono::{DateTime, Local};
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use pathfinder_geometry::vector::vec2f;
+#[cfg(windows)]
+use provider_setup::{ProviderSetup, ProviderSetupAction};
 use settings::{Setting, ToggleableSetting};
 use strum::IntoEnumIterator;
 use uuid::Uuid;
@@ -650,6 +654,8 @@ struct GrokOauthAttempt {
 
 pub struct WarpAgentPageView {
     page: PageType<Self>,
+    #[cfg(windows)]
+    provider_setup: Option<ProviderSetup>,
     self_handle: WeakViewHandle<Self>,
     voice_input_toggle_key_dropdown: ViewHandle<Dropdown<WarpAgentPageAction>>,
     voice_input_language_dropdown: ViewHandle<FilterableDropdown<WarpAgentPageAction>>,
@@ -1213,6 +1219,8 @@ impl WarpAgentPageView {
 
         Self {
             page: Self::build_page(ctx),
+            #[cfg(windows)]
+            provider_setup: warp_core::mywarp::enabled().then(|| ProviderSetup::new(ctx)),
             self_handle,
             voice_input_toggle_key_dropdown,
             voice_input_language_dropdown,
@@ -2542,6 +2550,10 @@ impl Entity for WarpAgentPageView {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WarpAgentPageAction {
+    #[cfg(windows)]
+    Provider(ProviderSetupAction),
+    #[cfg(windows)]
+    ApplyProviderSetup(ProviderSetupAction),
     OpenUrl(String),
     SetVoiceInputToggleKey(VoiceInputToggleKey),
     SetVoiceInputLanguage(String),
@@ -2574,8 +2586,6 @@ pub enum WarpAgentPageAction {
     RefreshGeminiEnterpriseCredentials,
     ToggleGeminiEnterpriseCredentialsEnabled,
     ToggleCloudAgentComputerUse,
-    OpenProviderConfiguration,
-    OpenProviderConnection,
     ToggleFileBasedMcp,
     ToggleIncludeAgentCommandsInHistory,
     ToggleAutoApproveBypassesCommandDenylist,
@@ -2608,6 +2618,14 @@ impl TypedActionView for WarpAgentPageView {
 
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         match action {
+            #[cfg(windows)]
+            WarpAgentPageAction::Provider(action) => ctx.dispatch_typed_action_deferred(
+                WarpAgentPageAction::ApplyProviderSetup(action.clone()),
+            ),
+            #[cfg(windows)]
+            WarpAgentPageAction::ApplyProviderSetup(action) => {
+                self.handle_provider_setup_action(action, ctx)
+            }
             WarpAgentPageAction::OpenUrl(url) => {
                 ctx.open_url(url.as_str());
             }
@@ -2982,31 +3000,6 @@ impl TypedActionView for WarpAgentPageView {
                     );
                 });
                 ctx.notify();
-            }
-            WarpAgentPageAction::OpenProviderConnection => {
-                AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    report_if_error!(
-                        settings
-                            .local_agent_runtime
-                            .set_value(crate::settings::LocalAgentRuntime::OpenCode, ctx)
-                    );
-                });
-                ctx.dispatch_typed_action(&crate::workspace::WorkspaceAction::AddLocalAgentTab);
-            }
-            WarpAgentPageAction::OpenProviderConfiguration => {
-                #[cfg(windows)]
-                if let Some(profile) = warp_core::windows_package::profile_dir() {
-                    if let Err(error) =
-                        warp_core::windows_package::import_existing_opencode_profile(profile)
-                    {
-                        log::error!("Could not import AI provider settings: {error}");
-                    }
-                    if let Ok(url) = url::Url::from_file_path(
-                        profile.join("providers/config/opencode/opencode.jsonc"),
-                    ) {
-                        ctx.open_url(url.as_str());
-                    }
-                }
             }
             WarpAgentPageAction::SignupAnonymousUser => {
                 ctx.emit(WarpAgentPageEvent::SignupAnonymousUser);
@@ -6945,65 +6938,33 @@ impl SettingsWidget for CustomModelRoutersWidget {
     }
 }
 
-#[derive(Default)]
-struct ProviderConnectionWidget {
-    button: MouseStateHandle,
-}
-
-impl SettingsWidget for ProviderConnectionWidget {
-    type View = WarpAgentPageView;
-    fn search_terms(&self) -> &str {
-        "AI provider connect login API key OpenRouter OpenAI Codex Claude Z.ai"
-    }
-    fn render(
-        &self,
-        _view: &Self::View,
-        appearance: &Appearance,
-        _app: &AppContext,
-    ) -> Box<dyn Element> {
-        Flex::column()
-            .with_child(appearance.ui_builder().span("Use your own AI provider").build().finish())
-            .with_child(appearance.ui_builder().span("MyWarp uses your configured provider through OpenCode. Existing configuration and provider sign-ins are imported into this profile on first use. No MyWarp account is needed.").with_soft_wrap().build().with_margin_top(8.).with_margin_bottom(12.).finish())
-            .with_child(appearance.ui_builder().button(ButtonVariant::Secondary, self.button.clone())
-                .with_text_label("Open provider setup".to_owned())
-                .build().on_click(|ctx, _, _| ctx.dispatch_typed_action(WarpAgentPageAction::OpenProviderConnection)).finish())
-            .finish()
-    }
-}
-
-#[derive(Default)]
-struct ProviderConfigurationWidget {
-    button: MouseStateHandle,
-}
-
-impl SettingsWidget for ProviderConfigurationWidget {
-    type View = WarpAgentPageView;
-    fn search_terms(&self) -> &str {
-        "AI provider configuration settings file opencode json API key"
-    }
-    fn render(
-        &self,
-        _view: &Self::View,
-        appearance: &Appearance,
-        _app: &AppContext,
-    ) -> Box<dyn Element> {
-        Flex::column()
-            .with_child(appearance.ui_builder().span("Provider configuration").build().finish())
-            .with_child(appearance.ui_builder().span("Select any connected model in the chat footer. API keys, saved sign-ins and provider settings stay in your MyWarp profile. Use /connect in provider setup to add another provider.").with_soft_wrap().build().with_margin_top(8.).with_margin_bottom(12.).finish())
-            .with_child(appearance.ui_builder().button(ButtonVariant::Secondary, self.button.clone())
-                .with_text_label("Open configuration file".to_owned())
-                .build().on_click(|ctx, _, _| ctx.dispatch_typed_action(WarpAgentPageAction::OpenProviderConfiguration)).finish())
-            .finish()
-    }
-}
-
 fn mywarp_provider_page() -> PageType<WarpAgentPageView> {
-    PageType::new_uncategorized(
+    let mut categories = Vec::new();
+    #[cfg(windows)]
+    {
+        use provider_setup::*;
+        categories.push(Category::new(
+            "Connections",
+            vec![Box::new(ConnectionWidget)],
+        ));
+        categories.push(Category::new("Models", vec![Box::new(ModelsWidget)]));
+        categories.push(Category::new(
+            "Agent behavior",
+            vec![Box::new(AgentModeWidget), Box::new(ToolPolicyWidget)],
+        ));
+        categories.push(Category::new(
+            "Instructions",
+            vec![Box::new(InstructionsWidget)],
+        ));
+        categories.push(Category::new("MCP servers", vec![Box::new(McpWidget)]));
+    }
+    categories.push(Category::new(
+        "Input and display",
         vec![
-            Box::new(ProviderConnectionWidget::default()),
-            Box::new(ProviderConfigurationWidget::default()),
-            Box::new(IncludeAgentCommandsInHistoryWidget::default()),
+            Box::new(ShowInputHintTextWidget::default()),
+            Box::new(ShowConversationHistoryWidget::default()),
+            Box::new(ThinkingDisplayModeWidget),
         ],
-        Some(PageTitle::new("AI providers")),
-    )
+    ));
+    PageType::new_categorized(categories, Some(PageTitle::new("AI providers and agent")))
 }

@@ -270,7 +270,7 @@ def stage_payload(args: argparse.Namespace, mode: str, arch: str, binary: Path, 
         + ("Configuration and data live in the profile folder beside MyWarp.exe. Keep the mywarp-portable marker.\n" if mode == "portable" else "Configuration and data live in %LOCALAPPDATA%\\MyWarp. Keep the mywarp-installed marker.\n")
         + "MyWarp settings: config\\settings.toml under that profile.\n"
         "OpenCode settings: providers\\config\\opencode\\opencode.jsonc under that profile.\n"
-        "Use OpenCode.bat and /connect for provider setup, or the OpenRouter key-file example.\n"
+        "Open Settings > Agents > AI providers to connect, choose a model and test it. OpenCode.bat remains available for advanced runtime setup.\n"
         "Fresh packages include no API keys, logins, chat history, or settings from the build computer.\n"
         "OpenCode is bundled; Codex and Claude Code remain separately installed tools with their own logins.\n"
         "No MyWarp account, sign-up, billing, cloud sync, or Warp-hosted AI is used.\n"
@@ -309,7 +309,7 @@ def main(mode: str, argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=f"Build a MyWarp Windows {mode} distribution.")
     parser.add_argument("--repo", type=Path, default=REPOSITORY)
     parser.add_argument("--output-dir", type=Path)
-    parser.add_argument("--version", default="0.2.0")
+    parser.add_argument("--version", default="0.3.0")
     parser.add_argument("--build-config", type=Path, help="Machine-local build tool settings; defaults to windows-build.local.json")
     parser.add_argument("--plain", action="store_true", help="Disable console colors and animation")
     parser.add_argument("--pause", action="store_true", help="Keep an interactive console open after completion")

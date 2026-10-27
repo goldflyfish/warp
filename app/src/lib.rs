@@ -127,6 +127,8 @@ pub mod integration_testing;
 pub mod keyboard;
 pub mod launch_configs;
 pub mod pane_group;
+#[cfg(feature = "provider-settings-check")]
+pub mod provider_settings_check;
 pub mod resource_center;
 pub mod root_view;
 pub mod search;

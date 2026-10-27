@@ -132,16 +132,24 @@ fn mywarp_provider_settings_search_filters_the_real_widgets() {
             let mut page = super::mywarp_provider_page();
             for (query, expected) in [
                 ("OpenRouter", 1),
-                ("configuration", 1),
+                ("permissions", 1),
+                ("MCP", 1),
+                ("personal instructions", 1),
                 ("Sign up", 0),
-                ("", 3),
+                ("", 9),
             ] {
                 page.update_filter(query, ctx);
-                let FilteredPageType::Uncategorized { widgets, title, .. } = page.get_filtered()
+                let FilteredPageType::Categorized {
+                    categories, title, ..
+                } = page.get_filtered()
                 else {
-                    panic!("expected provider settings")
+                    panic!("expected categorized provider settings")
                 };
-                assert_eq!(widgets.len(), expected, "query: {query}");
+                let count: usize = categories
+                    .iter()
+                    .map(|category| category.widgets.len())
+                    .sum();
+                assert_eq!(count, expected, "query: {query}");
                 if expected > 0 {
                     assert!(title.is_some());
                 }

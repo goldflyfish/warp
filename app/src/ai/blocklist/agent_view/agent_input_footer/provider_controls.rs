@@ -24,6 +24,8 @@ use crate::view_components::{Dropdown, DropdownItem};
 pub(super) enum ProviderAction {
     Runtime(NativeChatRuntime),
     Model(String),
+    ApplyRuntime(NativeChatRuntime),
+    ApplyModel(String),
     Answer {
         conversation: AIConversationId,
         approval: Uuid,
@@ -192,6 +194,14 @@ impl TypedActionView for ProviderControls {
         self.error = None;
         match action {
             ProviderAction::Runtime(runtime) => {
+                ctx.dispatch_typed_action_deferred(ProviderAction::ApplyRuntime(*runtime));
+                return;
+            }
+            ProviderAction::Model(model) => {
+                ctx.dispatch_typed_action_deferred(ProviderAction::ApplyModel(model.clone()));
+                return;
+            }
+            ProviderAction::ApplyRuntime(runtime) => {
                 if let Some(id) = self.conversation(ctx) {
                     let result = self.controller.update(ctx, |controller, ctx| {
                         controller.configure_provider_chat(id, *runtime, ctx)
@@ -204,7 +214,7 @@ impl TypedActionView for ProviderControls {
                     }
                 }
             }
-            ProviderAction::Model(model) => {
+            ProviderAction::ApplyModel(model) => {
                 if let Some(id) = self.conversation(ctx) {
                     self.runtime.update(ctx, |runtime, ctx| {
                         runtime.select_model(id, model.clone(), ctx)
@@ -231,7 +241,12 @@ impl TypedActionView for ProviderControls {
                 });
             }
             ProviderAction::Setup => {
-                ctx.open_url("https://opencode.ai/docs/providers/");
+                ctx.dispatch_typed_action(
+                    &crate::workspace::WorkspaceAction::ShowSettingsPageWithSearch {
+                        search_query: String::new(),
+                        section: Some(crate::settings_view::SettingsSection::WarpAgent),
+                    },
+                );
             }
         }
         self.refresh(ctx);
@@ -269,6 +284,30 @@ impl View for ProviderControls {
             };
         }
         row.add_child(ChildView::new(&self.model_dropdown).finish());
+        row.add_child(
+            warpui::elements::SavePosition::new(
+                appearance
+                    .ui_builder()
+                    .button(ButtonVariant::Secondary, self.setup_mouse.clone())
+                    .with_text_label("Providers".to_owned())
+                    .build()
+                    .on_click(|ctx, _, _| ctx.dispatch_typed_action(ProviderAction::Setup))
+                    .finish(),
+                "mywarp-chat-providers",
+            )
+            .finish(),
+        );
+        if !self.runtime.as_ref(ctx).can_stop(id) {
+            row.add_child(
+                appearance
+                    .ui_builder()
+                    .button(ButtonVariant::Secondary, self.retry_mouse.clone())
+                    .with_text_label("Reconnect".to_owned())
+                    .build()
+                    .on_click(move |ctx, _, _| ctx.dispatch_typed_action(ProviderAction::Retry(id)))
+                    .finish(),
+            );
+        }
         if self.runtime.as_ref(ctx).can_stop(id) {
             row.add_child(
                 appearance
@@ -297,31 +336,6 @@ impl View for ProviderControls {
                         .build()
                         .finish(),
                 );
-                let retry = appearance
-                    .ui_builder()
-                    .button(ButtonVariant::Secondary, self.retry_mouse.clone())
-                    .with_text_label("Retry connection".to_owned())
-                    .build()
-                    .on_click(move |ctx, _, _| ctx.dispatch_typed_action(ProviderAction::Retry(id)))
-                    .finish();
-                let setup = appearance
-                    .ui_builder()
-                    .button(ButtonVariant::Secondary, self.setup_mouse.clone())
-                    .with_text_label("Provider setup".to_owned())
-                    .build()
-                    .on_click(|ctx, _, _| ctx.dispatch_typed_action(ProviderAction::Setup))
-                    .finish();
-                if session.busy {
-                    column.add_child(setup);
-                } else {
-                    column.add_child(
-                        Flex::row()
-                            .with_spacing(6.)
-                            .with_child(retry)
-                            .with_child(setup)
-                            .finish(),
-                    );
-                }
             }
             if let Some(approval) = session.approvals.first() {
                 let approval_id = approval.id;

@@ -370,21 +370,24 @@ async fn run(
         );
     }
     #[cfg(windows)]
-    let runtime = warp_core::paths::bundled_resources_dir()
-        .and_then(|resources| {
-            resources
-                .parent()
-                .map(|directory| directory.join("tools/opencode/opencode.exe"))
-        })
-        .filter(|executable| executable.is_file())
-        .unwrap_or_else(|| PathBuf::from("opencode"));
+    let runtime = warp_core::provider_setup::runtime_executable();
     #[cfg(not(windows))]
     let runtime = PathBuf::from("opencode");
     let mut process = command::r#async::Command::new(runtime);
     #[cfg(windows)]
-    if let Some(profile) = warp_core::windows_package::profile_dir() {
+    process.creation_flags(0);
+    #[cfg(windows)]
+    let profile = if warp_core::mywarp::enabled() {
+        Some(warp_core::provider_setup::profile_dir()?)
+    } else {
+        warp_core::windows_package::profile_dir().map(PathBuf::from)
+    };
+    #[cfg(windows)]
+    if let Some(profile) = &profile {
         warp_core::windows_package::prepare_opencode_profile(profile)?;
-        warp_core::windows_package::import_existing_opencode_profile(profile)?;
+        if let Err(error) = warp_core::windows_package::import_existing_opencode_profile(profile) {
+            log::warn!("Provider import unavailable; using the existing profile: {error}");
+        }
         process.envs(warp_core::windows_package::opencode_environment(profile));
     }
     process
@@ -396,16 +399,27 @@ async fn run(
         .kill_on_drop(true);
     let inline_config = std::env::var("OPENCODE_CONFIG_CONTENT").ok();
     #[cfg(windows)]
-    let inline_config = if warp_core::windows_package::profile_dir().is_some() {
+    let inline_config = if profile.is_some() {
         None
     } else {
         inline_config
     };
-    process.env(
-        "OPENCODE_CONFIG_CONTENT",
-        attended_config(inline_config.as_deref())?,
-    );
-    let mut child = process.spawn().context("Could not start OpenCode. Install it on PATH and connect a provider using OpenCode's /connect command.")?;
+    let mut attended: Value = serde_json::from_str(&attended_config(inline_config.as_deref())?)?;
+    #[cfg(windows)]
+    if let Some(profile) = &profile {
+        let overrides = warp_core::provider_setup::runtime_overrides(profile)?;
+        attended
+            .as_object_mut()
+            .context("Invalid runtime configuration")?
+            .extend(
+                overrides
+                    .as_object()
+                    .context("Invalid agent preferences")?
+                    .clone(),
+            );
+    }
+    process.env("OPENCODE_CONFIG_CONTENT", serde_json::to_string(&attended)?);
+    let mut child = process.spawn().context("Could not start the AI runtime. Open Settings → AI providers and agent to check the provider connection.")?;
     #[cfg(target_os = "windows")]
     let runtime_job = {
         use std::os::windows::io::AsRawHandle as _;

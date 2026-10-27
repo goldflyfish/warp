@@ -1,3 +1,5 @@
+> Historical implementation notes. For current MyWarp 0.3.0 behavior and native provider setup, see [the setup guide](provider-setup.md).
+
 # Account-free MyWarp (0.2.0)
 
 The MyWarp OSS executable starts directly in the terminal. It neither creates a Warp account nor loads an old Warp identity from secure storage. Account, signup, billing, referrals, teams, Warp Drive and hosted-cloud settings are absent from its settings navigation and search. Attempts to open old account settings land on AI providers instead.

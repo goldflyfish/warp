@@ -1,3 +1,5 @@
+> Historical implementation notes. For current MyWarp 0.3.0 behavior and native provider setup, see [the setup guide](provider-setup.md).
+
 # Provider runtime integration
 
 ## Existing boundaries

@@ -115,6 +115,15 @@ impl Command {
         }
     }
 
+    /// Sets Windows process flags while preserving hidden console behavior.
+    #[cfg(windows)]
+    pub fn creation_flags(&mut self, flags: u32) -> &mut Self {
+        use async_process::windows::CommandExt as _;
+        self.inner
+            .creation_flags(flags | windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+        self
+    }
+
     /// Adds a single argument to pass to the program.
     ///
     /// # Examples
