@@ -3,13 +3,18 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use directories::BaseDirs;
+use jsonc_parser::ParseOptions;
+use jsonc_parser::cst::CstRootNode;
 
 use crate::channel::ChannelState;
 
 pub const PORTABLE_MARKER: &str = "mywarp-portable";
 pub const INSTALLED_MARKER: &str = "mywarp-installed";
+pub const CONFIGURATIONS_DIR: &str = "Configurations";
+
+const MIGRATION_MARKER: &str = ".profile-migration-in-progress";
 
 enum Package {
     Portable(PathBuf),
@@ -50,9 +55,9 @@ static PACKAGE: LazyLock<Option<Package>> = LazyLock::new(|| {
 fn detect_package(executable: &Path, local_data: Option<&Path>) -> Option<Package> {
     let directory = executable.parent()?;
     if directory.join(PORTABLE_MARKER).is_file() {
-        Some(Package::Portable(directory.join("profile")))
+        Some(Package::Portable(directory.join(CONFIGURATIONS_DIR)))
     } else if directory.join(INSTALLED_MARKER).is_file() {
-        local_data.map(|data| Package::Installed(data.join("MyWarp")))
+        local_data.map(|data| Package::Installed(data.join("MyWarp").join(CONFIGURATIONS_DIR)))
     } else {
         None
     }
@@ -60,6 +65,56 @@ fn detect_package(executable: &Path, local_data: Option<&Path>) -> Option<Packag
 
 pub fn profile_dir() -> Option<&'static Path> {
     PACKAGE.as_ref().map(Package::profile_dir)
+}
+
+pub fn prepare_profile() -> Result<()> {
+    let Some(package) = PACKAGE.as_ref() else {
+        return Ok(());
+    };
+    let profile = package.profile_dir();
+    let legacy = match package {
+        Package::Portable(_) => profile.with_file_name("profile"),
+        Package::Installed(_) => profile
+            .parent()
+            .context("The MyWarp profile has no parent")?
+            .to_owned(),
+    };
+    migrate_profile(&legacy, profile)?;
+    for name in ["config", "state", "data", "cache"] {
+        fs::create_dir_all(profile.join(name))?;
+    }
+    prepare_opencode_profile(profile)
+}
+
+fn migrate_profile(legacy: &Path, profile: &Path) -> Result<()> {
+    if !legacy.is_dir() {
+        return Ok(());
+    }
+    let marker = profile.join(MIGRATION_MARKER);
+    if profile.is_dir() && !marker.is_file() && fs::read_dir(profile)?.next().is_some() {
+        return Ok(());
+    }
+    fs::create_dir_all(profile).context("Could not create the Configurations folder")?;
+    fs::write(&marker, "").context("Could not start migrating the MyWarp profile")?;
+    for entry in fs::read_dir(legacy)? {
+        let entry = entry?;
+        if entry.path() == profile {
+            continue;
+        }
+        let destination = profile.join(entry.file_name());
+        if destination.try_exists()? {
+            bail!(
+                "A file in Configurations conflicts with the unfinished profile migration. Keep the desired file and remove its duplicate from the old profile before retrying."
+            );
+        }
+        fs::rename(entry.path(), destination)
+            .context("Could not move the existing MyWarp profile into Configurations. Close MyWarp and OpenCode before retrying.")?;
+    }
+    if legacy != profile.parent().unwrap_or(profile) {
+        fs::remove_dir(legacy).context("Could not remove the empty legacy profile folder")?;
+    }
+    fs::remove_file(marker).context("Could not finish migrating the MyWarp profile")?;
+    Ok(())
 }
 
 pub fn instance_namespace() -> String {
@@ -94,13 +149,72 @@ pub fn prepare_opencode_profile(profile: &Path) -> Result<()> {
         fs::create_dir_all(directory).context("Could not create the MyWarp provider profile")?;
     }
     let file = config.join("opencode.jsonc");
-    match OpenOptions::new().write(true).create_new(true).open(file) {
+    match OpenOptions::new().write(true).create_new(true).open(&file) {
         Ok(mut file) => file
             .write_all(b"{\"$schema\":\"https://opencode.ai/config.json\"}\n")
             .context("Could not initialize the MyWarp provider configuration"),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(error) => Err(error).context("Could not open the MyWarp provider configuration"),
+    }?;
+    rebase_personal_instructions(profile, &file)
+}
+
+fn rebase_personal_instructions(profile: &Path, config: &Path) -> Result<()> {
+    let instructions = profile.join("agent-instructions.md");
+    if !instructions.is_file() {
+        return Ok(());
     }
+    let Ok(original) = fs::read_to_string(config) else {
+        return Ok(());
+    };
+    let Ok(root) = CstRootNode::parse(&original, &ParseOptions::default()) else {
+        return Ok(());
+    };
+    let Some(paths) = root
+        .object_value()
+        .and_then(|object| object.array_value("instructions"))
+    else {
+        return Ok(());
+    };
+    let mut changed = false;
+    for value in paths.elements() {
+        let Some(value) = value.as_string_lit() else {
+            continue;
+        };
+        let path = value.decoded_value()?;
+        let path = Path::new(&path);
+        let managed_profile = path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                ["profile", "MyWarp", CONFIGURATIONS_DIR]
+                    .iter()
+                    .any(|known| name.eq_ignore_ascii_case(known))
+            });
+        if path.is_absolute()
+            && path
+                .file_name()
+                .is_some_and(|name| name == "agent-instructions.md")
+            && managed_profile
+            && path != instructions
+        {
+            value.set_raw_value(serde_json::to_string(&instructions.to_string_lossy())?);
+            changed = true;
+        }
+    }
+    if changed {
+        let mut temporary = tempfile::NamedTempFile::new_in(
+            config
+                .parent()
+                .context("The provider configuration has no parent")?,
+        )?;
+        temporary.write_all(root.to_string().as_bytes())?;
+        temporary
+            .persist(config)
+            .context("Could not update the personal instructions path")?;
+    }
+    Ok(())
 }
 
 pub fn import_existing_opencode_profile(profile: &Path) -> Result<()> {

@@ -38,7 +38,7 @@ Add a remote server URL or select a local command. For a local server, enter the
 
 ## Files and profile locations
 
-Portable applications use the `profile` directory beside the executable. Installed applications use `%LOCALAPPDATA%\MyWarp`. The executable and provider runtime use the same profile.
+Portable applications use the `Configurations` directory beside the executable. Installed applications use `%LOCALAPPDATA%\MyWarp\Configurations`. The executable and provider runtime use the same profile. Close both before copying this entire folder to transfer settings and provider connections. Legacy profiles migrate automatically when `Configurations` is absent or empty; existing copied configurations are preserved.
 
 Relative to that profile:
 

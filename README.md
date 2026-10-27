@@ -34,8 +34,10 @@ The default package version is **0.3.0**. Outputs go to `Packages\Portable` and 
 
 | Distribution | Configuration and local state |
 | --- | --- |
-| Portable | `profile\` beside `MyWarp.exe` |
-| Installed | `%LOCALAPPDATA%\MyWarp\` |
+| Portable | `Configurations\` beside `MyWarp.exe` |
+| Installed | `%LOCALAPPDATA%\MyWarp\Configurations\` |
+
+Close MyWarp and OpenCode, then copy the entire `Configurations` folder to back up or transfer settings and provider connections. Paste it beside a portable `MyWarp.exe`, or into `%LOCALAPPDATA%\MyWarp` for an installed copy. Existing profiles migrate automatically when the destination folder is missing or empty; a copied `Configurations` folder takes precedence.
 
 The installed executable goes under `%LOCALAPPDATA%\Programs\MyWarp`. Distributed packages contain fresh profiles without credentials from the build computer. Existing OpenCode configuration and sign-ins are imported into a fresh application profile on first GUI launch.
 

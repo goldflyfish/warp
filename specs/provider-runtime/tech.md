@@ -172,10 +172,15 @@ Existing outputs are refused rather than replaced; build-machine profiles and cr
 never packaging inputs. See [Windows packaging](windows-packaging.md) for flags and prerequisites.
 
 `warp_core::windows_package` detects `mywarp-portable` or `mywarp-installed` beside the running
-executable. Portable profiles live in the adjacent `profile` directory. Installed profiles live
-in the Windows known Local AppData folder under `MyWarp`. Config, data, state and cache helpers,
+executable. Portable profiles live in the adjacent `Configurations` directory. Installed profiles live
+in the Windows known Local AppData folder under `MyWarp/Configurations`. Config, data, state and cache helpers,
 including home-style Warp config, use that profile. Executables without a marker retain their
 existing paths. Single-instance mutexes and URI pipes use distinct installed/portable namespaces.
+
+Package initialization migrates legacy profiles before opening configuration files. A nonempty
+`Configurations` folder takes precedence over legacy data. Interrupted migrations resume using a
+marker and never overwrite conflicting files. The OpenCode shim invokes `MyWarp.exe --prepare-profile`
+so launching the runtime directly uses the same initialization and migration as the GUI.
 
 The OSS entry point initializes a fresh profile before starting threads, and adds the bundled
 OpenCode shim to its process PATH. Native chats resolve the bundled native executable directly.

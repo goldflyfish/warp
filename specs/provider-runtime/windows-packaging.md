@@ -83,7 +83,7 @@ portable profile used after an earlier build. Rebuilding the same version automa
 | Content | Portable | Installed |
 | --- | --- | --- |
 | Program | Extracted package folder | `%LOCALAPPDATA%\Programs\MyWarp` by default |
-| Profile | `profile` beside `MyWarp.exe` | `%LOCALAPPDATA%\MyWarp` |
+| Profile | `Configurations` beside `MyWarp.exe` | `%LOCALAPPDATA%\MyWarp\Configurations` |
 | Warp settings | `config\settings.toml` in the profile | Same profile-relative path |
 | Database, logs, protected credentials | `state` in the profile | Same profile-relative path |
 | Themes and workflows | `data` in the profile | Same profile-relative path |
@@ -95,6 +95,13 @@ The empty `mywarp-portable` / `mywarp-installed` marker determines the mode. Dir
 `MyWarp.exe` works; the batch launcher is optional. Keep the marker beside the executable.
 Unpackaged development builds retain upstream storage paths. Windows instance mutexes and URI
 pipes are separated by package profile, so installed and portable builds can run independently.
+
+To back up or transfer configuration, close MyWarp and OpenCode and copy the entire
+`Configurations` folder, including its subfolders. Paste it beside the portable executable or
+under `%LOCALAPPDATA%\MyWarp` for an installed copy. Both the GUI and `OpenCode.bat` migrate
+the old portable `profile` folder or installed `%LOCALAPPDATA%\MyWarp` contents when
+`Configurations` is missing or empty. Existing files in a copied folder take precedence.
+Fresh portable packages include an empty `Configurations` folder, initialized on first launch.
 
 Both package modes isolate OpenCode configuration from the build computer's environment/config
 overrides. Provider API-key environment variables remain supported. The native chat still forces

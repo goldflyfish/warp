@@ -12,7 +12,7 @@ fn portable_profile_follows_the_executable_instead_of_the_current_directory() {
     fs::create_dir(&application).unwrap();
     fs::write(application.join(PORTABLE_MARKER), "").unwrap();
     let package = detect_package(&application.join("MyWarp.exe"), Some(directory.path())).unwrap();
-    assert_eq!(package.profile_dir(), application.join("profile"));
+    assert_eq!(package.profile_dir(), application.join("Configurations"));
 }
 
 #[test]
@@ -23,7 +23,10 @@ fn installed_profile_uses_local_app_data_instead_of_the_installation_directory()
     fs::create_dir(&application).unwrap();
     fs::write(application.join(INSTALLED_MARKER), "").unwrap();
     let package = detect_package(&application.join("MyWarp.exe"), Some(&local_data)).unwrap();
-    assert_eq!(package.profile_dir(), local_data.join("MyWarp"));
+    assert_eq!(
+        package.profile_dir(),
+        local_data.join("MyWarp/Configurations")
+    );
     assert_eq!(package.instance_namespace(), "MyWarpInstalled");
 }
 
@@ -60,9 +63,213 @@ fn initializing_the_provider_profile_preserves_existing_configuration() {
 }
 
 #[test]
+fn copied_personal_instructions_follow_the_new_profile_without_changing_external_sources() {
+    let directory = tempdir().unwrap();
+    let profile = directory.path().join("Configurations");
+    prepare_opencode_profile(&profile).unwrap();
+    fs::write(profile.join("agent-instructions.md"), "Keep changes small.").unwrap();
+    let config = profile.join("providers/config/opencode/opencode.jsonc");
+    fs::write(&config, "{\n// Keep this comment\n\"instructions\":[\"C:/Old/MyWarp/Configurations/agent-instructions.md\",\"C:/Project/agent-instructions.md\",\"docs/rules.md\"]\n}\n").unwrap();
+
+    prepare_opencode_profile(&profile).unwrap();
+
+    let text = fs::read_to_string(config).unwrap();
+    assert!(text.contains("// Keep this comment"));
+    let root = CstRootNode::parse(&text, &ParseOptions::default()).unwrap();
+    let instructions = root
+        .object_value()
+        .unwrap()
+        .array_value("instructions")
+        .unwrap()
+        .elements();
+    assert_eq!(
+        instructions[0]
+            .as_string_lit()
+            .unwrap()
+            .decoded_value()
+            .unwrap(),
+        profile.join("agent-instructions.md").to_string_lossy()
+    );
+    assert_eq!(
+        instructions[1]
+            .as_string_lit()
+            .unwrap()
+            .decoded_value()
+            .unwrap(),
+        "C:/Project/agent-instructions.md"
+    );
+    assert_eq!(
+        instructions[2]
+            .as_string_lit()
+            .unwrap()
+            .decoded_value()
+            .unwrap(),
+        "docs/rules.md"
+    );
+}
+
+#[test]
+fn invalid_provider_configuration_is_preserved_when_rebasing_personal_instructions() {
+    let directory = tempdir().unwrap();
+    prepare_opencode_profile(directory.path()).unwrap();
+    fs::write(
+        directory.path().join("agent-instructions.md"),
+        "Keep changes small.",
+    )
+    .unwrap();
+    let config = directory
+        .path()
+        .join("providers/config/opencode/opencode.jsonc");
+    fs::write(&config, "{invalid").unwrap();
+
+    prepare_opencode_profile(directory.path()).unwrap();
+
+    assert_eq!(fs::read_to_string(config).unwrap(), "{invalid");
+}
+
+#[test]
+fn migrating_a_portable_profile_preserves_settings_and_referenced_keys() {
+    let directory = tempdir().unwrap();
+    let legacy = directory.path().join("profile");
+    let profile = directory.path().join("Configurations");
+    prepare_opencode_profile(&legacy).unwrap();
+    fs::create_dir_all(legacy.join("config")).unwrap();
+    fs::create_dir_all(legacy.join("providers/config/opencode/keys")).unwrap();
+    fs::write(legacy.join("config/settings.toml"), "font_size = 16\n").unwrap();
+    fs::write(
+        legacy.join("providers/config/opencode/keys/test.key"),
+        "fixture-key",
+    )
+    .unwrap();
+    fs::write(
+        legacy.join("providers/config/opencode/opencode.jsonc"),
+        r#"{"provider":{"fixture":{"options":{"apiKey":"{file:./keys/test.key}"}}}}"#,
+    )
+    .unwrap();
+    fs::create_dir(&profile).unwrap();
+
+    migrate_profile(&legacy, &profile).unwrap();
+    prepare_opencode_profile(&profile).unwrap();
+
+    assert!(!legacy.exists());
+    assert_eq!(
+        fs::read_to_string(profile.join("config/settings.toml")).unwrap(),
+        "font_size = 16\n"
+    );
+    assert_eq!(
+        fs::read_to_string(profile.join("providers/config/opencode/keys/test.key")).unwrap(),
+        "fixture-key"
+    );
+    assert_eq!(
+        fs::read_to_string(profile.join("providers/config/opencode/opencode.jsonc")).unwrap(),
+        r#"{"provider":{"fixture":{"options":{"apiKey":"{file:./keys/test.key}"}}}}"#
+    );
+    assert!(!profile.join(MIGRATION_MARKER).exists());
+}
+
+#[test]
+fn migrating_an_installed_profile_moves_data_into_its_configurations_subfolder() {
+    let directory = tempdir().unwrap();
+    let legacy = directory.path().join("MyWarp");
+    let profile = legacy.join("Configurations");
+    fs::create_dir_all(legacy.join("state")).unwrap();
+    fs::write(legacy.join("state/warp.sqlite"), b"fixture-database").unwrap();
+    fs::write(
+        legacy.join("agent-preferences.json"),
+        r#"{"tool_policy":"ask"}"#,
+    )
+    .unwrap();
+
+    migrate_profile(&legacy, &profile).unwrap();
+    migrate_profile(&legacy, &profile).unwrap();
+
+    assert_eq!(
+        fs::read(profile.join("state/warp.sqlite")).unwrap(),
+        b"fixture-database"
+    );
+    assert_eq!(
+        fs::read_to_string(profile.join("agent-preferences.json")).unwrap(),
+        r#"{"tool_policy":"ask"}"#
+    );
+    assert!(!legacy.join("state").exists());
+    assert!(!profile.join("Configurations").exists());
+    assert!(!profile.join(MIGRATION_MARKER).exists());
+}
+
+#[test]
+fn a_copied_configurations_folder_takes_precedence_over_a_legacy_profile() {
+    let directory = tempdir().unwrap();
+    let legacy = directory.path().join("profile");
+    let profile = directory.path().join("Configurations");
+    fs::create_dir_all(legacy.join("config")).unwrap();
+    fs::create_dir_all(profile.join("config")).unwrap();
+    fs::write(legacy.join("config/settings.toml"), "font_size = 12\n").unwrap();
+    fs::write(profile.join("config/settings.toml"), "font_size = 18\n").unwrap();
+
+    migrate_profile(&legacy, &profile).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(profile.join("config/settings.toml")).unwrap(),
+        "font_size = 18\n"
+    );
+    assert_eq!(
+        fs::read_to_string(legacy.join("config/settings.toml")).unwrap(),
+        "font_size = 12\n"
+    );
+}
+
+#[test]
+fn an_interrupted_profile_migration_resumes_without_losing_moved_files() {
+    let directory = tempdir().unwrap();
+    let legacy = directory.path().join("profile");
+    let profile = directory.path().join("Configurations");
+    fs::create_dir_all(&legacy).unwrap();
+    fs::create_dir_all(profile.join("config")).unwrap();
+    fs::write(legacy.join("agent-instructions.md"), "Keep changes small.").unwrap();
+    fs::write(profile.join("config/settings.toml"), "font_size = 16\n").unwrap();
+    fs::write(profile.join(MIGRATION_MARKER), "").unwrap();
+
+    migrate_profile(&legacy, &profile).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(profile.join("agent-instructions.md")).unwrap(),
+        "Keep changes small."
+    );
+    assert_eq!(
+        fs::read_to_string(profile.join("config/settings.toml")).unwrap(),
+        "font_size = 16\n"
+    );
+    assert!(!legacy.exists());
+    assert!(!profile.join(MIGRATION_MARKER).exists());
+}
+
+#[test]
+fn an_interrupted_profile_migration_never_overwrites_conflicting_files() {
+    let directory = tempdir().unwrap();
+    let legacy = directory.path().join("profile");
+    let profile = directory.path().join("Configurations");
+    fs::create_dir_all(&legacy).unwrap();
+    fs::create_dir_all(&profile).unwrap();
+    fs::write(legacy.join("agent-instructions.md"), "old instructions").unwrap();
+    fs::write(profile.join("agent-instructions.md"), "copied instructions").unwrap();
+    fs::write(profile.join(MIGRATION_MARKER), "").unwrap();
+
+    assert!(migrate_profile(&legacy, &profile).is_err());
+
+    assert_eq!(
+        fs::read_to_string(profile.join("agent-instructions.md")).unwrap(),
+        "copied instructions"
+    );
+    assert_eq!(
+        fs::read_to_string(legacy.join("agent-instructions.md")).unwrap(),
+        "old instructions"
+    );
+}
+
+#[test]
 fn separate_portable_profiles_have_distinct_single_instance_names() {
-    let first = Package::Portable(PathBuf::from("C:\\Apps\\First\\profile"));
-    let second = Package::Portable(PathBuf::from("C:\\Apps\\Second\\profile"));
+    let first = Package::Portable(PathBuf::from("C:\\Apps\\First\\Configurations"));
+    let second = Package::Portable(PathBuf::from("C:\\Apps\\Second\\Configurations"));
     assert_ne!(first.instance_namespace(), second.instance_namespace());
     assert_ne!(
         first.instance_namespace(),
@@ -72,7 +279,7 @@ fn separate_portable_profiles_have_distinct_single_instance_names() {
 
 #[test]
 fn opencode_storage_and_configuration_all_stay_inside_the_package_profile() {
-    let root = Path::new("C:\\Apps\\MyWarp\\profile");
+    let root = Path::new("C:\\Apps\\MyWarp\\Configurations");
     let environment = opencode_environment(root);
     assert_eq!(environment.len(), 6);
     assert!(environment.iter().all(|(_, path)| path.starts_with(root)));
@@ -97,8 +304,11 @@ fn check_process_paths(marker: &str, installed_profile: Option<PathBuf>) {
         ])
         .env(
             "MYWARP_EXPECTED_PROFILE",
-            installed_profile
-                .unwrap_or_else(|| fs::canonicalize(directory.path()).unwrap().join("profile")),
+            installed_profile.unwrap_or_else(|| {
+                fs::canonicalize(directory.path())
+                    .unwrap()
+                    .join("Configurations")
+            }),
         )
         .creation_flags(0)
         .stdin(Stdio::null())
@@ -120,7 +330,12 @@ fn portable_process_routes_all_warp_paths_into_its_own_folder() {
 fn installed_process_routes_all_warp_paths_into_local_app_data() {
     check_process_paths(
         INSTALLED_MARKER,
-        Some(BaseDirs::new().unwrap().data_local_dir().join("MyWarp")),
+        Some(
+            BaseDirs::new()
+                .unwrap()
+                .data_local_dir()
+                .join("MyWarp/Configurations"),
+        ),
     );
 }
 

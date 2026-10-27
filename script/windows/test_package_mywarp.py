@@ -67,22 +67,27 @@ class PackagingTests(unittest.TestCase):
         self.assertTrue((folder / 'mywarp-portable').is_file())
         self.assertFalse((folder / 'mywarp-installed').exists())
         self.assertTrue((folder / 'tools/opencode/LICENSE.txt').is_file())
-        config = folder / 'profile/providers/config/opencode/opencode.jsonc'
+        self.assertEqual(list((folder / 'Configurations').iterdir()), [])
+        self.assertFalse((folder / 'profile').exists())
+        manifest = json.loads((folder / 'package-manifest.json').read_text())
+        self.assertEqual(manifest['profile'], 'Configurations')
+        config = folder / 'resources/provider-config/opencode.jsonc'
         self.assertEqual(json.loads(config.read_text()), packaging.DEFAULT_CONFIG)
         with zipfile.ZipFile(self.output / (folder.name + '.zip')) as archive:
             self.assertIn(folder.name + '/MyWarp.exe', archive.namelist())
+            self.assertIn(folder.name + '/Configurations/', archive.namelist())
             self.assertFalse(any(name.endswith('openrouter.key') for name in archive.namelist()))
             self.assertFalse(any(b'DO_NOT_DISTRIBUTE_THIS_FIXTURE_SECRET' in archive.read(name) for name in archive.namelist()))
 
     def test_existing_portable_profile_is_preserved_when_rebuilding(self):
         self.assertEqual(self.invoke(), 0)
-        key = self.output / 'MyWarp-0.1.0-x64-portable/profile/user.key'
+        key = self.output / 'MyWarp-0.1.0-x64-portable/Configurations/user.key'
         key.write_text('existing-private-fixture')
         self.assertEqual(self.invoke(), 0)
         self.assertEqual(key.read_text(), 'existing-private-fixture')
         rebuilt = self.output / 'MyWarp-0.1.0-x64-build2-portable'
         self.assertTrue((rebuilt / 'MyWarp.exe').is_file())
-        self.assertFalse((rebuilt / 'profile/user.key').exists())
+        self.assertFalse((rebuilt / 'Configurations/user.key').exists())
         with zipfile.ZipFile(self.output / (rebuilt.name + '.zip')) as archive:
             self.assertFalse(any(name.endswith('user.key') for name in archive.namelist()))
 
@@ -118,8 +123,10 @@ class PackagingTests(unittest.TestCase):
         self.assertTrue((payload / 'mywarp-installed').is_file())
         self.assertFalse((payload / 'mywarp-portable').exists())
         self.assertFalse((payload / 'profile').exists())
+        self.assertFalse((payload / 'Configurations').exists())
         wrapper = (payload / 'tools/bin/opencode.cmd').read_text()
-        self.assertIn('%LOCALAPPDATA%\\MyWarp', wrapper)
+        self.assertIn('%LOCALAPPDATA%\\MyWarp\\Configurations', wrapper)
+        self.assertIn('"%MYWARP_PACKAGE%\\MyWarp.exe" --prepare-profile', wrapper)
         self.assertIn('set "OPENCODE_CONFIG_CONTENT="', wrapper)
 
     def test_failed_installer_compiler_leaves_no_partial_distribution(self):

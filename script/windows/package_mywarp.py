@@ -217,10 +217,12 @@ def opencode_wrapper() -> str:
 setlocal
 for %%I in ("%~dp0..\..") do set "MYWARP_PACKAGE=%%~fI"
 if exist "%MYWARP_PACKAGE%\mywarp-portable" (
-  set "MYWARP_PROFILE=%MYWARP_PACKAGE%\profile"
+  set "MYWARP_PROFILE=%MYWARP_PACKAGE%\Configurations"
 ) else (
-  if defined MYWARP_PROFILE_DIR (set "MYWARP_PROFILE=%MYWARP_PROFILE_DIR%") else (set "MYWARP_PROFILE=%LOCALAPPDATA%\MyWarp")
+  if defined MYWARP_PROFILE_DIR (set "MYWARP_PROFILE=%MYWARP_PROFILE_DIR%") else (set "MYWARP_PROFILE=%LOCALAPPDATA%\MyWarp\Configurations")
 )
+"%MYWARP_PACKAGE%\MyWarp.exe" --prepare-profile
+if errorlevel 1 exit /b 1
 set "XDG_CONFIG_HOME=%MYWARP_PROFILE%\providers\config"
 set "XDG_DATA_HOME=%MYWARP_PROFILE%\providers\data"
 set "XDG_CACHE_HOME=%MYWARP_PROFILE%\providers\cache"
@@ -263,11 +265,13 @@ def stage_payload(args: argparse.Namespace, mode: str, arch: str, binary: Path, 
     write_text(destination / "OpenCode.bat", '@echo off\r\ncall "%~dp0tools\\bin\\opencode.cmd" %*\r\nexit /b %errorlevel%\r\n')
     write_text(destination / "MyWarp.bat", '@echo off\r\nstart "" "%~dp0MyWarp.exe" %*\r\n')
     if mode == "portable":
-        write_provider_templates(destination / "profile/providers/config/opencode")
+        (destination / "Configurations").mkdir()
     instructions = (
         "MyWarp Windows package\n\n"
         "Start MyWarp.exe (or MyWarp.bat). Python is only needed to build packages.\n"
-        + ("Configuration and data live in the profile folder beside MyWarp.exe. Keep the mywarp-portable marker.\n" if mode == "portable" else "Configuration and data live in %LOCALAPPDATA%\\MyWarp. Keep the mywarp-installed marker.\n")
+        + ("Configuration and data live in the Configurations folder beside MyWarp.exe. Keep the mywarp-portable marker.\n" if mode == "portable" else "Configuration and data live in %LOCALAPPDATA%\\MyWarp\\Configurations. Keep the mywarp-installed marker.\n")
+        + "Close MyWarp and OpenCode, then copy the entire Configurations folder to back up or transfer settings and provider connections.\n"
+        "Existing profiles migrate automatically when Configurations is absent or empty. A copied Configurations folder takes precedence.\n"
         + "MyWarp settings: config\\settings.toml under that profile.\n"
         "OpenCode settings: providers\\config\\opencode\\opencode.jsonc under that profile.\n"
         "Open Settings > Agents > AI providers to connect, choose a model and test it. OpenCode.bat remains available for advanced runtime setup.\n"
@@ -292,7 +296,7 @@ def write_manifest(destination: Path, args: argparse.Namespace, mode: str, arch:
         revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.repo, stderr=subprocess.DEVNULL, text=True).strip()
     except (OSError, subprocess.CalledProcessError):
         revision = "unknown"
-    manifest = {"name": "MyWarp", "version": args.version, "architecture": arch, "mode": mode, "revision": revision, "profile": "profile" if mode == "portable" else "%LOCALAPPDATA%\\MyWarp", "files": files}
+    manifest = {"name": "MyWarp", "version": args.version, "architecture": arch, "mode": mode, "revision": revision, "profile": "Configurations" if mode == "portable" else "%LOCALAPPDATA%\\MyWarp\\Configurations", "files": files}
     write_text(destination / "package-manifest.json", json.dumps(manifest, indent=2) + "\n")
     return manifest
 
@@ -300,8 +304,7 @@ def write_manifest(destination: Path, args: argparse.Namespace, mode: str, arch:
 def make_zip(source: Path, destination: Path) -> None:
     with zipfile.ZipFile(destination, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for path in sorted(source.rglob("*")):
-            if path.is_file():
-                archive.write(path, Path(source.name) / path.relative_to(source))
+            archive.write(path, Path(source.name) / path.relative_to(source))
 
 
 def main(mode: str, argv: list[str] | None = None) -> int:
@@ -388,7 +391,7 @@ def main(mode: str, argv: list[str] | None = None) -> int:
             receipt_data = {**manifest, "artifact": artifact.name, "artifact_sha256": artifact_hash, "artifact_size": artifact.stat().st_size, "build_profile": args.profile}
             write_text(receipt, json.dumps(receipt_data, indent=2) + "\n")
         artifacts = [artifact, receipt] + ([folder] if mode == "portable" else [])
-        ui.finish(artifacts=artifacts, profile=str(folder / "profile") if mode == "portable" else manifest["profile"])
+        ui.finish(artifacts=artifacts, profile=str(folder / "Configurations") if mode == "portable" else manifest["profile"])
         return 0
     except (PackagingError, OSError, subprocess.CalledProcessError, ValueError, KeyboardInterrupt) as error:
         message = "Build cancelled." if isinstance(error, KeyboardInterrupt) else str(error)

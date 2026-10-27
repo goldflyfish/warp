@@ -9,7 +9,12 @@ use warp_core::channel::{Channel, ChannelConfig, ChannelState, OzConfig, WarpSer
 // Simple wrapper around warp::run() for Warp OSS builds.
 fn main() -> Result<()> {
     #[cfg(windows)]
-    initialize_windows_package()?;
+    {
+        initialize_windows_package()?;
+        if std::env::args_os().any(|arg| arg == "--prepare-profile") {
+            return Ok(());
+        }
+    }
     let mut state = ChannelState::new(
         Channel::Oss,
         ChannelConfig {
@@ -38,11 +43,8 @@ fn main() -> Result<()> {
 fn initialize_windows_package() -> Result<()> {
     use warp_core::windows_package;
 
+    windows_package::prepare_profile()?;
     if let Some(profile) = windows_package::profile_dir() {
-        for name in ["config", "state", "data", "cache"] {
-            std::fs::create_dir_all(profile.join(name))?;
-        }
-        windows_package::prepare_opencode_profile(profile)?;
         if !std::env::args_os().any(|arg| arg == "dump-settings-schema")
             && let Err(error) = windows_package::import_existing_opencode_profile(profile)
         {
