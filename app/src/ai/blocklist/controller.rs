@@ -8,6 +8,8 @@
 pub(crate) mod external_harness;
 pub mod input_context;
 mod pending_response_streams;
+#[cfg(not(target_family = "wasm"))]
+mod provider_chat;
 pub mod response_stream;
 pub(super) mod shared_session;
 mod slash_command;
@@ -349,6 +351,8 @@ pub struct BlocklistAIController {
 
     shared_session_state: shared_session::SharedSessionState,
     native_prompt_conversation_id: Option<AIConversationId>,
+    #[cfg(not(target_family = "wasm"))]
+    provider_chat: ModelHandle<crate::ai::agent_sdk::driver::harness::acp::desktop::DesktopAcp>,
     /// When set, prompts injected into the bound native conversation are handed to an external
     /// harness driving it instead of being sent to Warp's agent.
     external_harness_prompt_sink:
@@ -753,6 +757,13 @@ impl BlocklistAIController {
             should_refresh_available_llms_on_stream_finish: false,
             shared_session_state: shared_session::SharedSessionState::default(),
             native_prompt_conversation_id: None,
+            #[cfg(not(target_family = "wasm"))]
+            provider_chat: ctx.add_model(|ctx| {
+                crate::ai::agent_sdk::driver::harness::acp::desktop::DesktopAcp::new(
+                    terminal_surface_id,
+                    ctx,
+                )
+            }),
             external_harness_prompt_sink: None,
             external_harness_cancel_sink: None,
             ambient_agent_task_id: None,
@@ -789,7 +800,7 @@ impl BlocklistAIController {
         }
 
         let query = input_query.query().to_owned();
-        let (conversation_id, task_id) = match input_query.which_task {
+        let (conversation_id, task_id) = match &input_query.which_task {
             WhichTask::NewConversation => {
                 let conversation = self.start_new_conversation_for_request(ctx);
                 (conversation.id(), conversation.get_root_task_id().clone())
@@ -797,8 +808,13 @@ impl BlocklistAIController {
             WhichTask::Task {
                 conversation_id,
                 task_id,
-            } => (conversation_id, task_id),
+            } => (*conversation_id, task_id.clone()),
         };
+
+        #[cfg(not(target_family = "wasm"))]
+        if self.try_send_provider_query(conversation_id, &input_query, is_queued_prompt, ctx) {
+            return;
+        }
 
         // Drain any queued passive suggestion results for this conversation
         // *before* cancelling progress, since cancel_conversation_progress
@@ -1340,6 +1356,52 @@ impl BlocklistAIController {
             .is_viewer();
         if is_viewer {
             report_error!("Viewers should never attempt to send queries directly");
+        }
+
+        #[cfg(not(target_family = "wasm"))]
+        if self.has_provider_chat(conversation_id, ctx) {
+            let shared = self
+                .terminal_model
+                .lock()
+                .shared_session_status()
+                .is_sharer();
+            if is_viewer || shared || participant_id.is_some() || base.is_some() {
+                self.provider_chat.update(ctx, |model, ctx| {
+                    model.set_error(
+                        conversation_id,
+                        "Shared-session prompts are not supported by native OpenCode chat yet."
+                            .to_owned(),
+                        ctx,
+                    )
+                });
+                return false;
+            }
+            let task_id = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .unwrap()
+                .get_root_task_id()
+                .clone();
+            self.send_query(
+                InputQuery {
+                    which_task: WhichTask::Task {
+                        conversation_id,
+                        task_id,
+                    },
+                    input_query: InputQueryType::UserSubmittedQueryFromInput {
+                        query,
+                        static_query_type: None,
+                        running_command: None,
+                        base: None,
+                    },
+                    additional_attachments,
+                    queued_query_id,
+                },
+                entrypoint_type,
+                None,
+                is_queued_prompt,
+                ctx,
+            );
+            return true;
         }
 
         // A wake's text is only a fallback for clients that cannot read its origin, so it must
@@ -2839,6 +2901,16 @@ impl BlocklistAIController {
     ) -> anyhow::Result<(AIConversationId, api::RequestParams)> {
         let history_model = BlocklistAIHistoryModel::as_ref(ctx);
 
+        if followup_conversation_id
+            .or_else(|| history_model.active_conversation_id(self.terminal_surface_id))
+            .and_then(|id| history_model.conversation(&id))
+            .is_some_and(|conversation| conversation.provider_session().is_some())
+        {
+            return Err(anyhow!(
+                "Warp passive suggestions are disabled in provider conversations"
+            ));
+        }
+
         // Resolve conversation state. For follow-ups we read from history;
         // for new triggers we generate a fresh ID without persisting anything.
         let (conversation_id, task_id, conversation_data) = if let Some(conversation_id) =
@@ -3418,6 +3490,13 @@ impl BlocklistAIController {
         QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
             model.remove_pending_lrc_rows(conversation_id, ctx);
         });
+
+        #[cfg(not(target_family = "wasm"))]
+        if self.has_provider_chat(conversation_id, ctx) {
+            self.provider_chat
+                .update(ctx, |model, ctx| model.cancel(conversation_id, ctx));
+            return CancellationRoute::ExternalHarness;
+        }
 
         if self.cancel_via_external_harness(conversation_id, ctx) {
             return CancellationRoute::ExternalHarness;

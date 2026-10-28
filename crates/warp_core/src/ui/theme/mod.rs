@@ -1,7 +1,7 @@
 pub mod color;
 pub mod phenomenon;
 
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use dirs::home_dir;
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,23 @@ impl Serialize for Image {
             ));
         };
 
+        let path = Path::new(&path)
+            .strip_prefix(themes_dir())
+            .ok()
+            .filter(|relative| {
+                !relative.as_os_str().is_empty()
+                    && relative
+                        .components()
+                        .all(|part| matches!(part, Component::Normal(_)))
+            })
+            .map(|relative| {
+                relative
+                    .iter()
+                    .map(|part| part.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .unwrap_or(path);
         let serialized = SerializedBackgroundThemeImage {
             path,
             opacity: self.opacity,
@@ -66,7 +83,7 @@ impl<'de> Deserialize<'de> for Image {
         let path = {
             let expanded_path = expand_tilde(value.path.into());
             if expanded_path.is_absolute() {
-                expanded_path
+                resolve_copied_theme_image(expanded_path, &themes_dir())
             } else {
                 themes_dir().join(expanded_path)
             }
@@ -80,6 +97,16 @@ impl<'de> Deserialize<'de> for Image {
             opacity: value.opacity,
         })
     }
+}
+
+fn resolve_copied_theme_image(path: PathBuf, theme_root: &Path) -> PathBuf {
+    // Copied themes should use their accompanying assets even when the original image still exists.
+    path.ancestors()
+        .filter(|parent| parent.file_name().is_some_and(|name| name == "themes"))
+        .filter_map(|parent| path.strip_prefix(parent).ok())
+        .map(|relative| theme_root.join(relative))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or(path)
 }
 
 /// Returns the default opacity for serde to use for an [`Image`] if one is not

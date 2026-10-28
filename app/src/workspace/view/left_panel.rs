@@ -110,9 +110,10 @@ impl ToolPanelView {
                 }
             }
             ToolPanelView::ConversationListView => {
-                if AuthStateProvider::as_ref(app)
-                    .get()
-                    .is_anonymous_or_logged_out()
+                if !warp_core::mywarp::enabled()
+                    && AuthStateProvider::as_ref(app)
+                        .get()
+                        .is_anonymous_or_logged_out()
                 {
                     ToolPanelAvailability::RequiresAccount
                 } else if AISettings::as_ref(app).is_conversation_history_available(app) {
@@ -177,6 +178,11 @@ mod active_view_state {
         new_view: ToolPanelView,
         ctx: &mut ViewContext<super::LeftPanelView>,
     ) {
+        let new_view = if warp_core::mywarp::enabled() && new_view == ToolPanelView::WarpDrive {
+            ToolPanelView::ConversationListView
+        } else {
+            new_view
+        };
         let previous = left_panel.active_view.0;
         left_panel.active_view.0 = new_view;
         left_panel.update_button_active_states();
@@ -375,7 +381,13 @@ impl LeftPanelView {
             }
         });
 
-        let active_view = views.first().copied().unwrap_or(ToolPanelView::WarpDrive);
+        let active_view = views.first().copied().unwrap_or_else(|| {
+            if warp_core::mywarp::enabled() {
+                ToolPanelView::ConversationListView
+            } else {
+                ToolPanelView::WarpDrive
+            }
+        });
         let toolbelt_buttons = views
             .iter()
             .map(|view| Self::create_toolbelt_button_config(view, ctx))

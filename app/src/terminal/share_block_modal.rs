@@ -500,7 +500,11 @@ impl ShareBlockModal {
             );
             ctx.clipboard().write(ClipboardContent::plain_text(link));
             ctx.emit(ShareBlockModalEvent::ShowToast {
-                message: "Link copied.".to_string(),
+                message: if warp_core::mywarp::enabled() {
+                    "Local file link copied.".to_string()
+                } else {
+                    "Link copied.".to_string()
+                },
                 flavor: ToastFlavor::Default,
             });
         }
@@ -869,6 +873,8 @@ impl ShareBlockModal {
         let modal_title_or_block_title = Text::new_inline(
             if link_generated {
                 self.block_title_editor.as_ref(app).buffer_text(app)
+            } else if warp_core::mywarp::enabled() {
+                "Export block to a local file".to_string()
             } else {
                 "Share block".to_string()
             },

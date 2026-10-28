@@ -8,13 +8,23 @@ use warp_core::channel::{Channel, ChannelConfig, ChannelState, OzConfig, WarpSer
 
 // Simple wrapper around warp::run() for Warp OSS builds.
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    {
+        initialize_windows_package()?;
+        if std::env::args_os().any(|arg| arg == "--prepare-profile") {
+            return Ok(());
+        }
+    }
     let mut state = ChannelState::new(
         Channel::Oss,
         ChannelConfig {
-            app_id: AppId::new("dev", "warp", "WarpOss"),
+            app_id: AppId::new("dev", "goldflyfish", "MyWarp"),
             logfile_name: "warp-oss.log".into(),
-            server_config: WarpServerConfig::production(),
-            oz_config: OzConfig::production(),
+            server_config: WarpServerConfig::offline(),
+            oz_config: OzConfig {
+                oz_root_url: "http://127.0.0.1:0".into(),
+                workload_audience_url: None,
+            },
             telemetry_config: None,
             crash_reporting_config: None,
             autoupdate_config: None,
@@ -27,6 +37,39 @@ fn main() -> Result<()> {
     ChannelState::set(state);
 
     warp::run()
+}
+
+#[cfg(windows)]
+fn initialize_windows_package() -> Result<()> {
+    use warp_core::windows_package;
+
+    windows_package::prepare_profile()?;
+    if let Some(profile) = windows_package::profile_dir() {
+        if !std::env::args_os().any(|arg| arg == "dump-settings-schema")
+            && let Err(error) = windows_package::import_existing_opencode_profile(profile)
+        {
+            log::warn!("Could not import existing provider settings: {error}");
+        }
+        // SAFETY: This runs at the executable entry point, before Warp starts any threads.
+        unsafe {
+            std::env::set_var("MYWARP_PROFILE_DIR", profile);
+        }
+    }
+    let tools = std::env::current_exe()?
+        .parent()
+        .map(|directory| directory.join("tools/bin"));
+    if let Some(tools) = tools.filter(|directory| directory.is_dir()) {
+        let mut paths = vec![tools];
+        paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        let path = std::env::join_paths(paths)?;
+        // SAFETY: No threads have been started at this point.
+        unsafe {
+            std::env::set_var("PATH", path);
+        }
+    }
+    Ok(())
 }
 
 // If we're not using an external plist, embed the following as the Info.plist.

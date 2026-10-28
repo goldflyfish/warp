@@ -13,6 +13,32 @@ use super::*;
 use crate::appearance::Appearance;
 use crate::workspaces::workspace::{BillingMetadata, CustomerType};
 
+#[cfg(windows)]
+#[test]
+fn provider_model_search_keeps_the_configuration_panel_separate_from_behavior() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let mut page = super::warp_agent_page::mywarp_provider_page();
+            page.update_filter("verification", ctx);
+            let FilteredPageType::Categorized {
+                categories, title, ..
+            } = page.get_filtered()
+            else {
+                panic!("expected provider categories");
+            };
+            assert!(title.is_some());
+            assert_eq!(categories.len(), 1);
+            assert_eq!(categories[0].widgets.len(), 1);
+            page.update_filter("", ctx);
+            let FilteredPageType::Categorized { categories, .. } = page.get_filtered() else {
+                panic!("expected provider categories");
+            };
+            assert_eq!(categories.len(), 4);
+            assert!(!page.update_filter("input hint", ctx).is_truthy());
+        });
+    });
+}
+
 fn billing_metadata(customer_type: CustomerType) -> BillingMetadata {
     BillingMetadata {
         customer_type,
@@ -93,7 +119,14 @@ fn match_data_countable_zero_is_not_truthy() {
 
 #[test]
 fn subpage_display_names_are_correct() {
-    assert_eq!(SettingsSection::WarpAgent.to_string(), "Warp Agent");
+    assert_eq!(
+        SettingsSection::WarpAgent.to_string(),
+        if warp_core::mywarp::enabled() {
+            "AI providers"
+        } else {
+            "Warp Agent"
+        }
+    );
     assert_eq!(SettingsSection::AgentProfiles.to_string(), "Profiles");
     assert_eq!(SettingsSection::AgentMCPServers.to_string(), "MCP servers");
     assert_eq!(SettingsSection::Knowledge.to_string(), "Knowledge");
@@ -140,6 +173,7 @@ const ALL_SECTIONS: &[SettingsSection] = &[
     SettingsSection::WarpDrive,
     SettingsSection::Warpify,
     SettingsSection::WarpAgent,
+    SettingsSection::WarpAgentBehavior,
     SettingsSection::AgentProfiles,
     SettingsSection::AgentMCPServers,
     SettingsSection::Knowledge,
@@ -153,8 +187,10 @@ const ALL_SECTIONS: &[SettingsSection] = &[
 /// Sections whose user-facing Display label has deliberately diverged from the
 /// slug it was seeded from, because the slug is a stored contract that the
 /// rename must not follow.
-const SECTIONS_WITH_RENAMED_DISPLAY_LABELS: &[SettingsSection] =
-    &[SettingsSection::WarpCloudAgentAPIKeys];
+const SECTIONS_WITH_RENAMED_DISPLAY_LABELS: &[SettingsSection] = &[
+    SettingsSection::WarpCloudAgentAPIKeys,
+    SettingsSection::WarpAgent,
+];
 
 #[test]
 fn all_sections_list_is_exhaustive() {
@@ -174,6 +210,7 @@ fn all_sections_list_is_exhaustive() {
             | SettingsSection::WarpDrive
             | SettingsSection::Warpify
             | SettingsSection::WarpAgent
+            | SettingsSection::WarpAgentBehavior
             | SettingsSection::AgentProfiles
             | SettingsSection::AgentMCPServers
             | SettingsSection::Knowledge
@@ -232,6 +269,7 @@ fn slugs_were_seeded_from_the_display_labels_they_replaced() {
 
 #[test]
 fn renamed_sections_keep_the_slug_they_were_seeded_with() {
+    assert_eq!(SettingsSection::WarpAgent.slug(), "Warp Agent");
     // The section dropped "Oz" from what the user reads, but persisted sessions
     // and `surface.settings.open --page` still speak the original slug.
     assert_eq!(
@@ -1157,6 +1195,60 @@ fn category_header_with_trailing_element_and_no_subtitle_does_not_panic_flex_lay
             presenter.invalidate(invalidation, ctx);
             // Panicked here before the fix.
             presenter.build_scene(vec2f(800., 600.), 1., None, ctx);
+        });
+    });
+}
+
+#[test]
+fn mywarp_settings_exclude_account_and_warp_services() {
+    assert!(!SettingsSection::Account.available_in_mywarp());
+    assert!(!SettingsSection::BillingAndUsage.available_in_mywarp());
+    assert!(!SettingsSection::WarpDrive.available_in_mywarp());
+    assert!(!SettingsSection::CloudEnvironments.available_in_mywarp());
+    assert!(!SettingsSection::Teams.available_in_mywarp());
+    assert!(!SettingsSection::Referrals.available_in_mywarp());
+    assert!(SettingsSection::WarpAgent.available_in_mywarp());
+    assert!(SettingsSection::WarpAgentBehavior.available_in_mywarp());
+    assert!(SettingsSection::AgentProfiles.available_in_mywarp());
+    assert!(SettingsSection::Appearance.available_in_mywarp());
+    assert!(SettingsSection::ThirdPartyCLIAgents.available_in_mywarp());
+}
+
+#[test]
+fn behavior_search_restores_original_input_controls_without_provider_configuration() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let mut page = PageType::new_categorized(
+                vec![Category::new(
+                    "Input",
+                    super::warp_agent_page::behavior_input_widgets(),
+                )],
+                Some(PageTitle::new("Warp Agent")),
+            );
+            page.update_filter("", ctx);
+            let FilteredPageType::Categorized { categories, .. } = page.get_filtered() else {
+                panic!("expected behavior categories");
+            };
+            let original_count = categories[0].widgets.len();
+            assert!(matches!(
+                page.update_filter("input hint", ctx),
+                MatchData::Countable(1)
+            ));
+            let FilteredPageType::Categorized {
+                categories, title, ..
+            } = page.get_filtered()
+            else {
+                panic!("expected behavior categories");
+            };
+            assert!(title.is_some());
+            assert_eq!(categories.len(), 1);
+            assert_eq!(categories[0].widgets.len(), 1);
+            assert!(!page.update_filter("verification", ctx).is_truthy());
+            page.update_filter("", ctx);
+            let FilteredPageType::Categorized { categories, .. } = page.get_filtered() else {
+                panic!("expected behavior categories");
+            };
+            assert_eq!(categories[0].widgets.len(), original_count);
         });
     });
 }

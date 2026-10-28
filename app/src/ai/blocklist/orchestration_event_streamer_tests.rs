@@ -525,6 +525,7 @@ fn ai_conversation_new_restored_preserves_last_event_sequence() {
         last_event_sequence: Some(42),
         pinned: false,
         use_warp_credits_instead_of_chatgpt: false,
+        provider_session: None,
     };
     let conversation =
         AIConversation::new_restored(AIConversationId::new(), vec![task], Some(data))

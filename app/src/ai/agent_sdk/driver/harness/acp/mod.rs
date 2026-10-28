@@ -19,12 +19,14 @@ mod attachments;
 mod bridge;
 mod cli_transcript;
 mod connection;
+pub(crate) mod desktop;
 mod launch;
 mod manifest;
 mod mapping;
 mod model_config;
 mod policy;
 mod protocol;
+mod read_only;
 mod turn_driver;
 
 use std::collections::{HashMap, VecDeque};
@@ -243,7 +245,8 @@ impl ThirdPartyHarness for AcpHarness {
             Harness::Claude => CLIAgent::Claude,
             Harness::Codex => CLIAgent::Codex,
             Harness::Gemini => CLIAgent::Gemini,
-            Harness::Pi | Harness::Oz | Harness::OpenCode | Harness::Unknown => CLIAgent::Unknown,
+            Harness::OpenCode => CLIAgent::OpenCode,
+            Harness::Pi | Harness::Oz | Harness::Unknown => CLIAgent::Unknown,
         }
     }
 

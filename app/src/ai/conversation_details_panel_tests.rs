@@ -81,6 +81,7 @@ fn test_from_conversation_prefers_server_creator_profile() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
         conversation.set_server_metadata(create_test_server_metadata(
@@ -249,6 +250,7 @@ fn test_from_task_includes_linked_directory_when_run_id_matches() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 
@@ -396,6 +398,7 @@ fn test_from_conversation_populates_local_conversation_fields() {
                 root_task_is_optimistic: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 
@@ -570,6 +573,7 @@ fn test_from_task_includes_linked_directory_when_server_token_matches() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 
@@ -669,6 +673,7 @@ fn test_conversation_mode_carries_no_runner() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 

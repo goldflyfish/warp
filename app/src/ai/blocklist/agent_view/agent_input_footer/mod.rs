@@ -1,6 +1,8 @@
 pub(super) mod chips;
 pub mod editor;
 mod environment_selector;
+#[cfg(not(target_family = "wasm"))]
+mod provider_controls;
 pub mod toolbar_item;
 
 #[cfg(not(target_family = "wasm"))]
@@ -194,6 +196,8 @@ fn is_conversation_transcript_context(
 /// A single `ViewHandle<AgentInputFooter>` is shared between `Input` and
 /// `UseAgentToolbar`, rendering the appropriate mode in each context.
 pub struct AgentInputFooter {
+    #[cfg(not(target_family = "wasm"))]
+    provider_controls: ViewHandle<provider_controls::ProviderControls>,
     terminal_view_id: EntityId,
     #[cfg_attr(not(feature = "voice_input"), allow(unused))]
     mic_button: ViewHandle<ActionButton>,
@@ -347,6 +351,9 @@ impl AgentInputFooter {
         menu_positioning_provider: Arc<dyn MenuPositioningProvider>,
         terminal_view_id: EntityId,
         ai_input_model: ModelHandle<BlocklistAIInputModel>,
+        #[cfg(not(target_family = "wasm"))] ai_controller: ModelHandle<
+            crate::ai::blocklist::BlocklistAIController,
+        >,
         terminal_model: Arc<FairMutex<TerminalModel>>,
         ambient_agent_view_model: Option<ModelHandle<AmbientAgentViewModel>>,
         handoff_compose_state: ModelHandle<HandoffComposeState>,
@@ -354,6 +361,10 @@ impl AgentInputFooter {
         display_chip_config: DisplayChipConfig,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
+        #[cfg(not(target_family = "wasm"))]
+        let provider_controls = ctx.add_typed_action_view(|ctx| {
+            provider_controls::ProviderControls::new(terminal_view_id, ai_controller, ctx)
+        });
         let button_size = ButtonSize::AgentInputButton;
 
         let nld_button = ctx.add_typed_action_view(|ctx| {
@@ -873,7 +884,8 @@ impl AgentInputFooter {
             },
         );
         // Subscribe to AIExecutionProfilesModel to potentially show/hide the profile selector button when profiles are added/removed
-        ctx.subscribe_to_model(&AIExecutionProfilesModel::handle(ctx), |_, _, _, ctx| {
+        ctx.subscribe_to_model(&AIExecutionProfilesModel::handle(ctx), |me, _, _, ctx| {
+            me.sync_fast_forward_button(ctx);
             ctx.notify();
         });
 
@@ -964,6 +976,8 @@ impl AgentInputFooter {
         };
 
         let mut me = Self {
+            #[cfg(not(target_family = "wasm"))]
+            provider_controls,
             terminal_view_id,
             ambient_agent_view_model: None,
             nld_button,
@@ -2142,6 +2156,10 @@ impl AgentInputFooter {
             .map(|c| c.autoexecute_any_action())
             .unwrap_or(false)
             || is_force_enabled;
+        #[cfg(not(target_family = "wasm"))]
+        let is_active = is_active
+            || (warp_core::mywarp::enabled()
+                && self.provider_controls.as_ref(ctx).auto_approve_enabled(ctx));
 
         let icon = if is_active {
             Icon::FastForwardFilled
@@ -2530,6 +2548,10 @@ impl View for AgentInputFooter {
         if self.should_render_cloud_mode_v2(app) {
             return self.render_cloud_mode_v2_footer(app);
         }
+        #[cfg(not(target_family = "wasm"))]
+        if self.provider_controls.as_ref(app).is_provider_chat(app) {
+            return ChildView::new(&self.provider_controls).finish();
+        }
         // When a CLI agent session is active, render the CLI agent toolbar instead.
         if self.is_cli_agent_session_active(app) {
             return self.render_cli_mode_footer(app);
@@ -2545,6 +2567,11 @@ impl View for AgentInputFooter {
             .with_main_axis_alignment(MainAxisAlignment::Start)
             .with_run_spacing(4.)
             .with_spacing(4.);
+
+        #[cfg(not(target_family = "wasm"))]
+        if self.ambient_agent_view_model.is_none() {
+            left_buttons.add_child(ChildView::new(&self.provider_controls).finish());
+        }
 
         let is_ambient_agent = FeatureFlag::CloudMode.is_enabled()
             && self

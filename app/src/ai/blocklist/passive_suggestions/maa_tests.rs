@@ -45,3 +45,46 @@ fn detects_paths_in_head_and_tail_of_capped_block_contents() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[cfg(windows)]
+#[test]
+fn provider_code_suggestions_only_edit_supplied_unique_text() {
+    use serde_json::json;
+    let context = json!({"allow_edits":true,"trigger":{"ShellCommandCompleted":{"relevant_files":[{"file_name":"fixture.rs","content":{"StringContent":"before"}}]}}});
+    let valid = json!({"edits":[{"file_path":"fixture.rs","search":"before","replace":"after"}],"title":"Fix"});
+    assert!(matches!(
+        super::parse_provider_suggestion(&context, &valid).unwrap(),
+        Some(super::ExtractedSuggestion::CodeDiff { .. })
+    ));
+    let outside =
+        json!({"edits":[{"file_path":"../secret.rs","search":"before","replace":"after"}]});
+    assert!(super::parse_provider_suggestion(&context, &outside).is_err());
+    let missing =
+        json!({"edits":[{"file_path":"fixture.rs","search":"not present","replace":"after"}]});
+    assert!(super::parse_provider_suggestion(&context, &missing).is_err());
+    let ambiguous = json!({"allow_edits":true,"trigger":{"ShellCommandCompleted":{"relevant_files":[{"file_name":"fixture.rs","content":{"StringContent":"before before"}}]}}});
+    assert!(super::parse_provider_suggestion(&ambiguous, &valid).is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn provider_suggestions_respect_the_requested_feature_toggles() {
+    use serde_json::json;
+    let response = json!({"prompt":"Review the fix","edits":[]});
+    assert!(
+        super::parse_provider_suggestion(
+            &json!({"allow_prompt":false,"allow_edits":false}),
+            &response
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert!(matches!(
+        super::parse_provider_suggestion(
+            &json!({"allow_prompt":true,"allow_edits":false}),
+            &response
+        )
+        .unwrap(),
+        Some(super::ExtractedSuggestion::Prompt { .. })
+    ));
+}

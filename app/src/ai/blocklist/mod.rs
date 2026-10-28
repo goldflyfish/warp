@@ -17,6 +17,8 @@ pub(crate) mod orchestration_event_streamer;
 pub(crate) mod orchestration_events;
 pub(crate) mod orchestration_topology;
 mod passive_suggestions;
+#[cfg(all(windows, feature = "provider-settings-check"))]
+pub(crate) use passive_suggestions::check_provider_code_suggestion;
 pub(crate) mod pending_cli_harness_prompt_queue;
 pub(crate) mod queued_query;
 pub(super) use controller::RequestInput;

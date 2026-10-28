@@ -6,11 +6,15 @@ pub(crate) mod download;
 pub mod factory;
 pub mod harness_support;
 pub mod integrations;
+#[cfg(windows)]
+mod local_blocks;
 pub mod managed_mcp;
 pub mod managed_secrets;
 pub mod object;
 pub(crate) mod presigned_upload;
 pub mod prewarmed_sandbox;
+#[cfg(windows)]
+pub(crate) mod provider_ai;
 pub mod referral;
 pub mod team;
 #[cfg(feature = "tui")]
@@ -1189,6 +1193,12 @@ impl ServerApi {
         team_scope: RequestTeamScope,
     ) -> Result<generate_ai_input_suggestions::GenerateAIInputSuggestionsResponseV2, AIApiError>
     {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            return Ok(
+                provider_ai::generate("next-command", provider_ai::NEXT_COMMAND, request).await?,
+            );
+        }
         let auth_token = self.get_or_refresh_access_token().await?;
 
         let mut request_builder = self.base_client.http_client().post(format!(
@@ -1218,6 +1228,14 @@ impl ServerApi {
         request: &GetRelevantFiles,
         team_scope: RequestTeamScope,
     ) -> Result<GetRelevantFilesResponse, AIApiError> {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            let mut response: GetRelevantFilesResponse = provider_ai::generate("relevant-files", r#"{"relevant_file_paths":["an exact supplied file path"]}. Select only supplied files relevant to the query."#, request).await?;
+            response
+                .relevant_file_paths
+                .retain(|path| request.files.iter().any(|file| &file.path == path));
+            return Ok(response);
+        }
         let auth_token = self.get_or_refresh_access_token().await?;
 
         let mut request_builder = self.base_client.http_client().post(format!(
@@ -1248,6 +1266,12 @@ impl ServerApi {
         request: &GenerateAMQuerySuggestionsRequest,
         team_scope: RequestTeamScope,
     ) -> Result<generate_am_query_suggestions::GenerateAMQuerySuggestionsResponse, AIApiError> {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            return Ok(
+                provider_ai::generate("prompt-suggestion", provider_ai::PROMPT, request).await?,
+            );
+        }
         let auth_token = self.get_or_refresh_access_token().await?;
 
         cfg_if::cfg_if! {
@@ -1287,6 +1311,10 @@ impl ServerApi {
         request: &PredictAMQueriesRequest,
         team_scope: RequestTeamScope,
     ) -> Result<PredictAMQueriesResponse, AIApiError> {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            return Ok(provider_ai::generate("query-completion", r#"{"suggestion":"complete the partial user query"}. Return the full query, preserving its existing prefix."#, request).await?);
+        }
         let auth_token = self.get_or_refresh_access_token().await?;
         let mut request_builder = self.base_client.http_client().post(format!(
             "{}/ai/predict_am_queries",
@@ -1316,6 +1344,16 @@ impl ServerApi {
         request: &TranscribeRequest,
         team_scope: RequestTeamScope,
     ) -> Result<TranscribeResponse, TranscribeError> {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            let audio = request
+                .audio
+                .clone()
+                .context("No voice recording was provided")?;
+            return Ok(TranscribeResponse {
+                text: warp_core::local_speech::transcribe(audio, request.language.clone()).await?,
+            });
+        }
         let auth_token = self.get_or_refresh_access_token().await?;
 
         let mut request_builder = self

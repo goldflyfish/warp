@@ -7487,6 +7487,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonc-parser"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ecded084f9b9a718d39668a42657c32253663d1f6afb3fbb9134f0305f73f48"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "jsonrpc"
 version = "0.1.0"
 dependencies = [
@@ -15672,8 +15681,10 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-broadcast",
+ "base64 0.22.1",
  "cfg-if",
  "chrono",
+ "command",
  "command-corrections",
  "concat-idents",
  "dashmap",
@@ -15687,6 +15698,7 @@ dependencies = [
  "instant",
  "inventory",
  "itertools 0.14.0",
+ "jsonc-parser",
  "lazy_static",
  "line-ending",
  "log",
@@ -15704,6 +15716,7 @@ dependencies = [
  "serde_yaml 0.8.26",
  "settings",
  "settings_value",
+ "sha2 0.10.9",
  "shellexpand",
  "string-offset",
  "strum 0.27.1",
@@ -15714,6 +15727,7 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "uuid",
  "warp_errors",
  "warp_features",
  "warp_util",

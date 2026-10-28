@@ -255,6 +255,16 @@ impl PromptAlertView {
     }
 
     pub fn determine_state<S: TeamScope + ?Sized>(scope: &S, app: &AppContext) -> PromptAlertState {
+        if warp_core::mywarp::enabled() {
+            return PromptAlertState::NoAlert;
+        }
+        Self::determine_warp_credit_state(scope, app)
+    }
+
+    fn determine_warp_credit_state<S: TeamScope + ?Sized>(
+        scope: &S,
+        app: &AppContext,
+    ) -> PromptAlertState {
         // First, if the user is offline, no AI features will work.
         if !NetworkStatus::as_ref(app).is_online() {
             return PromptAlertState::NoConnection;

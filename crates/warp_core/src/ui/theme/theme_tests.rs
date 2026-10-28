@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn theme_image_assets_are_saved_relative_to_the_theme_directory() {
+    let image = Image {
+        source: AssetSource::LocalFile {
+            path: themes_dir()
+                .join("backgrounds/custom.png")
+                .to_string_lossy()
+                .into_owned(),
+            content_version: None,
+        },
+        opacity: 60,
+    };
+
+    let text = serde_yaml::to_string(&image).unwrap();
+
+    let saved: SerializedBackgroundThemeImage = serde_yaml::from_str(&text).unwrap();
+    assert_eq!(saved.path, "backgrounds/custom.png");
+    assert_eq!(saved.opacity, 60);
+    assert_eq!(serde_yaml::from_str::<Image>(&text).unwrap(), image);
+}
+
+#[test]
+fn theme_images_outside_the_theme_directory_preserve_their_paths() {
+    let path = themes_dir()
+        .join("../external.png")
+        .to_string_lossy()
+        .into_owned();
+    let image = Image {
+        source: AssetSource::LocalFile {
+            path: path.clone(),
+            content_version: None,
+        },
+        opacity: 60,
+    };
+
+    let text = serde_yaml::to_string(&image).unwrap();
+
+    let saved: SerializedBackgroundThemeImage = serde_yaml::from_str(&text).unwrap();
+    assert_eq!(saved.path, path);
+}
+
+#[test]
+fn copied_image_themes_use_their_own_assets_even_if_the_old_image_still_exists() {
+    let directory = tempfile::tempdir().unwrap();
+    let original = directory.path().join("original/themes");
+    let copied = directory.path().join("copied/themes");
+    std::fs::create_dir_all(&original).unwrap();
+    std::fs::create_dir_all(&copied).unwrap();
+    std::fs::write(original.join("background.png"), "original image").unwrap();
+    std::fs::write(copied.join("background.png"), "copied image").unwrap();
+
+    let resolved = resolve_copied_theme_image(original.join("background.png"), &copied);
+
+    assert_eq!(resolved, copied.join("background.png"));
+}
+
+#[test]
 fn serialize_test() {
     let theme = WarpTheme::new(
         Fill::Solid(ColorU::from_u32(0x20A5BAFF)),

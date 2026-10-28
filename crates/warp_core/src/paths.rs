@@ -64,6 +64,10 @@ pub fn warp_home_config_dir_name() -> String {
 /// Warp-authored, user-facing config under a `.warp*` directory in the home directory instead of
 /// using the platform XDG/AppData project directories.
 pub fn warp_home_config_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    if let Some(profile) = crate::windows_package::profile_dir() {
+        return Some(crate::windows_package::configuration_dir(profile));
+    }
     dirs::home_dir().map(|home_dir| home_dir.join(warp_home_config_dir_name()))
 }
 
@@ -117,6 +121,10 @@ fn macos_config_dir_name_for(channel: Channel, data_profile: Option<&str>) -> St
 ///
 /// This is the appropriate home for things like custom themes and workflows.
 pub fn data_dir() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(profile) = crate::windows_package::profile_dir() {
+        return crate::windows_package::runtime_dir(profile).join("data");
+    }
     cfg_if! {
         if #[cfg(target_os = "macos")] {
             // TODO(vorporeal): We should do something better than return a
@@ -153,6 +161,10 @@ fn gui_app_id() -> AppId {
 /// Returns the path to the directory where non-portable configuration files
 /// should be stored.
 pub fn config_local_dir() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(profile) = crate::windows_package::profile_dir() {
+        return crate::windows_package::configuration_dir(profile);
+    }
     cfg_if! {
         if #[cfg(target_os = "macos")] {
             // TODO(vorporeal): We should do something better than return a
@@ -174,6 +186,10 @@ pub fn config_local_dir() -> PathBuf {
 /// GUI `.warp*` directory, so this fails closed instead of selecting a source
 /// profile implicitly.
 pub fn gui_config_local_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    if let Some(profile) = crate::windows_package::profile_dir() {
+        return Some(crate::windows_package::configuration_dir(profile));
+    }
     cfg_if! {
         if #[cfg(target_os = "macos")] {
             if ChannelState::data_profile().is_some() {
@@ -258,6 +274,10 @@ pub fn base_config_dir() -> PathBuf {
 /// contains durable but non-critical and non-portable data like what windows
 /// the user had open and cached state of known Warp Drive objects.
 pub fn state_dir() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(profile) = crate::windows_package::profile_dir() {
+        return crate::windows_package::runtime_dir(profile).join("state");
+    }
     let Some(project_dirs) = project_dirs() else {
         return PathBuf::new();
     };
@@ -309,7 +329,24 @@ pub fn tui_state_dir() -> PathBuf {
 
 /// Returns the path to the directory containing the user's custom themes.
 pub fn themes_dir() -> PathBuf {
-    data_dir().join("themes")
+    user_config_dir().join("themes")
+}
+
+/// Returns the directory for user-authored themes, workflows, and launch configurations.
+pub fn user_config_dir() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(profile) = crate::windows_package::profile_dir() {
+        return crate::windows_package::configuration_dir(profile);
+    }
+    data_dir()
+}
+
+pub fn private_config_local_dir() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(profile) = crate::windows_package::profile_dir() {
+        return crate::windows_package::runtime_dir(profile).join("config");
+    }
+    config_local_dir()
 }
 
 /// Returns the path to the directory where files can be stored for caching
@@ -319,6 +356,10 @@ pub fn themes_dir() -> PathBuf {
 /// we don't want to fetch on every launch of the app but can be safely
 /// deleted by the OS.
 pub fn cache_dir() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(profile) = crate::windows_package::profile_dir() {
+        return crate::windows_package::runtime_dir(profile).join("cache");
+    }
     let Some(project_dirs) = project_dirs() else {
         return PathBuf::new();
     };

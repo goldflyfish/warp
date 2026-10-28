@@ -2962,6 +2962,8 @@ impl Input {
                 menu_positioning_provider.clone(),
                 terminal_view_id,
                 ai_input_model.clone(),
+                #[cfg(not(target_family = "wasm"))]
+                ai_controller.clone(),
                 model.clone(),
                 // Wired post-construction via `attach_ambient_agent_view_model`.
                 None,
@@ -6571,7 +6573,8 @@ impl Input {
         let has_any_ai = {
             let user_workspaces = UserWorkspaces::as_ref(ctx);
             let scope = user_workspaces.team_context_for_view(ctx);
-            AIRequestUsageModel::as_ref(ctx).has_any_ai_remaining(&scope, ctx)
+            warp_core::mywarp::enabled()
+                || AIRequestUsageModel::as_ref(ctx).has_any_ai_remaining(&scope, ctx)
         };
         if !has_any_ai {
             return;
@@ -15095,10 +15098,28 @@ impl Input {
             return;
         }
 
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(id) = self
+            .ai_context_model
+            .as_ref(ctx)
+            .selected_conversation_id(ctx)
+            && self.ai_controller.as_ref(ctx).has_provider_chat(id, ctx)
+        {
+            let query = self.editor.as_ref(ctx).buffer_text(ctx);
+            if !query.trim().is_empty() {
+                self.ai_controller.update(ctx, |controller, ctx| {
+                    controller.send_user_query_in_conversation(query, id, None, ctx);
+                });
+                ctx.emit(Event::ExecuteAIQuery);
+            }
+            return;
+        }
+
         let has_any_ai = {
             let user_workspaces = UserWorkspaces::as_ref(ctx);
             let scope = user_workspaces.team_context_for_view(ctx);
-            AIRequestUsageModel::as_ref(ctx).has_any_ai_remaining(&scope, ctx)
+            warp_core::mywarp::enabled()
+                || AIRequestUsageModel::as_ref(ctx).has_any_ai_remaining(&scope, ctx)
         };
         if !has_any_ai {
             AIRequestUsageModel::handle(ctx).update(ctx, |model, ctx| {

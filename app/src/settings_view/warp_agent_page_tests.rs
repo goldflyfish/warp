@@ -123,3 +123,38 @@ fn grok_button_action_reflects_tokens_and_attempt_phase() {
         GrokSubscriptionButtonAction::Disconnect
     );
 }
+
+#[test]
+fn mywarp_provider_settings_search_filters_the_real_widgets() {
+    use super::super::settings_page::FilteredPageType;
+    warpui::App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let mut page = super::mywarp_provider_page();
+            for (query, expected) in [
+                ("OpenRouter", 1),
+                ("permissions", 1),
+                ("MCP", 1),
+                ("personal instructions", 1),
+                ("Sign up", 0),
+                ("input hint", 0),
+                ("", 5),
+            ] {
+                page.update_filter(query, ctx);
+                let FilteredPageType::Categorized {
+                    categories, title, ..
+                } = page.get_filtered()
+                else {
+                    panic!("expected categorized provider settings")
+                };
+                let count: usize = categories
+                    .iter()
+                    .map(|category| category.widgets.len())
+                    .sum();
+                assert_eq!(count, expected, "query: {query}");
+                if expected > 0 {
+                    assert!(title.is_some());
+                }
+            }
+        });
+    });
+}

@@ -131,6 +131,10 @@ impl AuthState {
             return state;
         }
 
+        if warp_core::mywarp::enabled() {
+            return state;
+        }
+
         // Try WARP_USER_SECRET environment variable.
         if let Some(persisted) = option_env!("WARP_USER_SECRET")
             .and_then(|s| serde_json::from_str::<PersistedUser>(s).ok())

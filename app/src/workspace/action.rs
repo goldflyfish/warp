@@ -257,6 +257,7 @@ pub enum WorkspaceAction {
     AddAmbientAgentTab,
     /// Add a new tab that immediately enters agent view with a new conversation.
     AddAgentTab,
+    AddLocalAgentTab,
     /// Add a new tab running a local Docker sandbox via `sbx`.
     AddDockerSandboxTab,
     OpenNewSessionMenu {
@@ -989,6 +990,7 @@ impl WorkspaceAction {
             | AddTabWithShell { .. }
             | AddGetStartedTab
             | AddAgentTab
+            | AddLocalAgentTab
             | AddAmbientAgentTab
             | AddDockerSandboxTab
             | AddWindow

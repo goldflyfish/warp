@@ -478,6 +478,107 @@ pub const VOICE_INPUT_LANGUAGES: &[(&str, &str)] = &[
     ("zu", "Zulu"),
 ];
 
+#[derive(
+    Default,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Copy,
+    Clone,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeChatRuntime {
+    #[default]
+    Warp,
+    OpenCode,
+}
+
+/// Runtime launched by the local agent tab action. Credentials stay with the runtime.
+#[derive(
+    Default,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Copy,
+    Clone,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalAgentRuntime {
+    #[default]
+    OpenCode,
+    Codex,
+    ClaudeCode,
+    ZaiCodingPlan,
+    Zai,
+}
+
+impl LocalAgentRuntime {
+    pub const ALL: [Self; 5] = [
+        Self::OpenCode,
+        Self::Codex,
+        Self::ClaudeCode,
+        Self::ZaiCodingPlan,
+        Self::Zai,
+    ];
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::OpenCode => "OpenCode (multiple providers)",
+            Self::Codex => "Codex",
+            Self::ClaudeCode => "Claude Code",
+            Self::ZaiCodingPlan => "Z.AI Coding Plan (OpenCode)",
+            Self::Zai => "Z.AI Standard API (OpenCode)",
+        }
+    }
+
+    pub fn launch_command(self) -> &'static str {
+        match self {
+            Self::OpenCode => "opencode",
+            Self::Codex => "codex",
+            Self::ClaudeCode => "claude",
+            Self::ZaiCodingPlan => "opencode --model zai-coding-plan/glm-5.3",
+            Self::Zai => "opencode --model zai/glm-5.3",
+        }
+    }
+
+    pub fn setup_url(self) -> &'static str {
+        match self {
+            Self::OpenCode => "https://opencode.ai/docs/providers/",
+            Self::Codex => "https://developers.openai.com/codex/auth/",
+            Self::ClaudeCode => "https://code.claude.com/docs/en/setup",
+            Self::ZaiCodingPlan | Self::Zai => "https://docs.z.ai/devpack/tool/opencode",
+        }
+    }
+
+    pub fn connection_description(self) -> &'static str {
+        match self {
+            Self::OpenCode => {
+                "Use /connect inside OpenCode to add a provider, then /models to choose a model. OpenAI supports login or an API key; Anthropic and Z.ai use API keys."
+            }
+            Self::Codex => {
+                "Sign in to Codex with your ChatGPT account or configure your OpenAI API key in Codex. Existing Codex authentication is reused."
+            }
+            Self::ClaudeCode => {
+                "Sign in inside Claude Code or configure an Anthropic API key there. Existing Claude Code authentication is reused."
+            }
+            Self::ZaiCodingPlan => {
+                "Uses OpenCode with Z.AI Coding Plan and GLM-5.3. Run /connect inside OpenCode, select Z.AI Coding Plan, and enter your Coding Plan API key. Use /models to change the model."
+            }
+            Self::Zai => {
+                "Uses OpenCode with Z.AI Standard API and GLM-5.3. Run /connect inside OpenCode, select Z.AI, and enter your API key. This uses your API balance; Coding Plan subscribers should choose Z.AI Coding Plan instead. Use /models to change the model."
+            }
+        }
+    }
+}
+
 /// The default mode for new terminal sessions.
 #[derive(
     Default,
@@ -1232,6 +1333,18 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.warp_agent.is_any_ai_enabled",
         description: "Controls whether all AI features are enabled.",
     },
+    // Kept separate from the legacy flag, which older account onboarding could
+    // force off even when a local provider was configured.
+    native_agent_enabled: NativeAgentEnabled {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.warp_agent.native_agent_enabled",
+        description: "Enables the local provider agent without a Warp account.",
+    },
     // This field should not be referenced directly to lookup active AI enablement -- use the
     // `is_active_ai_enabled()` getter.
     is_active_ai_enabled_internal: IsActiveAIEnabled {
@@ -1915,6 +2028,28 @@ define_settings_group!(AISettings, settings: [
         description: "Whether to show the \"Use Agent\" footer for terminal commands.",
     }
 
+    native_chat_runtime: PreferredNativeChatRuntime {
+        type: NativeChatRuntime,
+        default: if warp_core::mywarp::enabled() { NativeChatRuntime::OpenCode } else { NativeChatRuntime::Warp },
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.third_party.native_chat_runtime",
+        description: "The runtime selected for new native desktop conversations.",
+    }
+
+    local_agent_runtime: PreferredLocalAgentRuntime {
+        type: LocalAgentRuntime,
+        default: LocalAgentRuntime::OpenCode,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.third_party.local_agent_runtime",
+        description: "The runtime to launch in a new local agent tab. Authentication is managed by the runtime.",
+    }
+
     // Whether to render the CLI agent footer for commands like Claude, Codex, Gemini, etc.
     // This is independent of the "Use Agent" footer setting.
     should_render_cli_agent_footer: ShouldRenderCLIAgentToolbar {
@@ -2275,6 +2410,9 @@ impl AISettings {
     }
 
     pub fn is_any_ai_enabled(&self, app: &AppContext) -> bool {
+        if warp_core::mywarp::enabled() {
+            return *self.native_agent_enabled;
+        }
         // Disable AI for anonymous and logged-out users.
         let is_anonymous_or_logged_out = AuthStateProvider::as_ref(app)
             .get()
@@ -2303,6 +2441,9 @@ impl AISettings {
 
     pub fn default_session_mode(&self, app: &AppContext) -> DefaultSessionMode {
         let mode = *self.default_session_mode_internal.value();
+        if warp_core::mywarp::enabled() && mode == DefaultSessionMode::CloudAgent {
+            return DefaultSessionMode::Agent;
+        }
         match mode {
             // Terminal and TabConfig don't require AI.
             DefaultSessionMode::Terminal | DefaultSessionMode::TabConfig => mode,

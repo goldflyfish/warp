@@ -637,6 +637,9 @@ pub fn render_info_icon<T: Clone + Action>(
     appearance: &Appearance,
     additional_info: AdditionalInfo<T>,
 ) -> Box<dyn Element> {
+    if warp_core::mywarp::enabled() {
+        return Empty::new().finish();
+    }
     let tooltip_text = additional_info
         .tooltip_override_text
         .unwrap_or("Click to learn more in docs".to_owned());
