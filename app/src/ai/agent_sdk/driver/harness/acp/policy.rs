@@ -11,7 +11,9 @@ use std::path::PathBuf;
 use warp_util::path::EscapeChar;
 use warpui::{AppContext, EntityId, SingletonEntity};
 
-use super::mapping::{command_from_raw_input, first_diff, path_from_raw_input};
+use super::mapping::{
+    command_from_raw_input, effective_tool_kind, first_diff, path_from_raw_input,
+};
 use super::protocol::{ToolCallFields, ToolKind};
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::{
@@ -37,10 +39,11 @@ impl PolicyRequest {
     /// agent chooses which fields to include, so paths are gathered from every place it may
     /// have put them.
     pub(super) fn for_tool_call(call: &ToolCallFields) -> Option<Self> {
-        match call.kind? {
+        let kind = effective_tool_kind(call)?;
+        match kind {
             ToolKind::Execute => {
                 let title = call.title.as_deref().unwrap_or_default();
-                command_from_raw_input(call.raw_input.as_ref(), call.kind, title)
+                command_from_raw_input(call.raw_input.as_ref(), Some(kind), title)
                     .map(|command| Self::Execute { command })
             }
             ToolKind::Edit | ToolKind::Delete | ToolKind::Move => {

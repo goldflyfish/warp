@@ -17,7 +17,7 @@ use warpui::r#async::{SpawnedFutureHandle, Timer};
 use warpui::{Entity, EntityId, ModelContext, ModelSpawner, SingletonEntity};
 
 use super::connection::{AcpConnection, AgentRequestHandler, InboundNotification, RpcError};
-use super::mapping::{AcpTurnMapper, TurnEvent};
+use super::mapping::{AcpTurnMapper, TurnEvent, effective_tool_kind};
 use super::policy::{PolicyDecision, PolicyRequest};
 use super::protocol::{
     self, ContentBlock, InitializeResponse, PermissionOptionKind, PermissionOutcome, PromptParams,
@@ -1152,6 +1152,7 @@ fn permission_handler(
             let (reply, answer) = oneshot::channel();
             let can_allow = allow.is_some();
             let approval = Uuid::new_v4();
+            let kind = effective_tool_kind(&params.tool_call);
             let title = params
                 .tool_call
                 .title
@@ -1172,7 +1173,7 @@ fn permission_handler(
                             title,
                             details,
                             can_allow,
-                            kind: params.tool_call.kind,
+                            kind,
                             reply,
                         });
                     }
@@ -1195,12 +1196,13 @@ fn tool_is_read_only(
     call: &protocol::ToolCallFields,
     escape_char: warp_util::path::EscapeChar,
 ) -> bool {
-    match call.kind {
+    let kind = effective_tool_kind(call);
+    match kind {
         Some(protocol::ToolKind::Read | protocol::ToolKind::Search | protocol::ToolKind::Think) => {
             true
         }
         Some(protocol::ToolKind::Execute) => {
-            super::mapping::command_from_raw_input(call.raw_input.as_ref(), call.kind, "")
+            super::mapping::command_from_raw_input(call.raw_input.as_ref(), kind, "")
                 .is_some_and(|command| super::read_only::is_read_only(&command, escape_char))
         }
         Some(
@@ -1251,10 +1253,11 @@ fn profile_allows_tool(
             })
             .collect::<Vec<_>>()
     };
-    match call.kind {
+    let kind = effective_tool_kind(call);
+    match kind {
         Some(protocol::ToolKind::Execute) => super::mapping::command_from_raw_input(
             call.raw_input.as_ref(),
-            call.kind,
+            kind,
             call.title.as_deref().unwrap_or_default(),
         )
         .is_some_and(|command| {

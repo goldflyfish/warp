@@ -61,6 +61,45 @@ fn provider_chat_identifies_read_only_tools() {
 }
 
 #[test]
+fn provider_chat_identifies_generic_git_commands_as_read_only() {
+    let call = serde_json::from_value(json!({
+        "toolCallId": "git-status",
+        "kind": "other",
+        "title": "git status && git diff --stat && git log --oneline -5",
+        "locations": [{"path": r"C:\Users\Public\Projects\MyWarp"}],
+        "rawInput": {
+            "command": "git status && git diff --stat && git log --oneline -5",
+            "directories": [r"C:\Users\Public\Projects\MyWarp"]
+        }
+    }))
+    .unwrap();
+
+    assert!(tool_is_read_only(
+        &call,
+        warp_util::path::EscapeChar::Backtick
+    ));
+    assert!(tool_is_read_only(
+        &call,
+        warp_util::path::EscapeChar::Backslash
+    ));
+}
+
+#[test]
+fn provider_chat_does_not_infer_commands_from_generic_tool_titles() {
+    let call = serde_json::from_value(json!({
+        "toolCallId": "unknown",
+        "kind": "other",
+        "title": "git status"
+    }))
+    .unwrap();
+
+    assert!(!tool_is_read_only(
+        &call,
+        warp_util::path::EscapeChar::Backtick
+    ));
+}
+
+#[test]
 fn provider_chat_prompt_keeps_windows_directory_context_separate_from_the_user_query() {
     let content = prompt_content(
         "Is everything committed?".to_owned(),
@@ -538,10 +577,16 @@ fn provider_chat_auto_approve_persists_the_active_profiles_write_permissions() {
                 .clone()
         });
         controller.read(&app, |controller, ctx| {
-            let call = serde_json::from_value(json!({"toolCallId":"write", "kind":"execute", "rawInput":{"command":"echo content > file.txt"}})).unwrap();
+            let call = serde_json::from_value(json!({"toolCallId":"write", "kind":"other", "rawInput":{"command":"echo content > file.txt"}})).unwrap();
             assert!(profile_allows_tool(controller, id, terminal.id(), &call, None, ctx));
-            let denied = serde_json::from_value(json!({"toolCallId":"denied", "kind":"execute", "rawInput":{"command":"blocked-command"}})).unwrap();
+            let denied = serde_json::from_value(json!({"toolCallId":"denied", "kind":"other", "rawInput":{"command":"blocked-command"}})).unwrap();
             assert!(!profile_allows_tool(controller, id, terminal.id(), &denied, None, ctx));
+            assert!(matches!(
+                PolicyRequest::for_tool_call(&denied).unwrap().evaluate_for_conversation(
+                    controller, id, terminal.id(), controller.provider_escape_char(ctx), ctx,
+                ),
+                PolicyDecision::Deny { .. }
+            ));
         });
         controller.update(&mut app, |controller, ctx| {
             controller
@@ -556,6 +601,124 @@ fn provider_chat_auto_approve_persists_the_active_profiles_write_permissions() {
             assert_eq!(profile.data().command_denylist, denylist);
         });
     });
+}
+
+#[test]
+fn provider_chat_auto_approves_generic_commands_with_the_active_profile() {
+    let response =
+        permission_response_for_generic_command("echo fixture > fixture.txt", true, None);
+
+    assert_eq!(response["outcome"]["optionId"], "once");
+}
+
+#[test]
+fn provider_chat_auto_approves_generic_read_only_commands_without_auto_approve() {
+    let response = permission_response_for_generic_command(
+        "git status && git diff --stat && git log --oneline -5",
+        false,
+        None,
+    );
+
+    assert_eq!(response["outcome"]["optionId"], "once");
+}
+
+#[test]
+fn provider_chat_rejects_denylisted_generic_commands_with_auto_approve() {
+    let response =
+        permission_response_for_generic_command("blocked-command", true, Some("blocked-command"));
+
+    assert_eq!(response["outcome"]["optionId"], "deny");
+}
+
+fn permission_response_for_generic_command(
+    command: &'static str,
+    auto_approve: bool,
+    denied_command: Option<&'static str>,
+) -> Value {
+    use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
+    use crate::settings::AgentModeCommandExecutionPredicate;
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let controller = terminal.read(&app, |terminal, _| terminal.ai_controller().clone());
+        let runtime = controller.read(&app, |controller, _| controller.provider_chat().clone());
+        let id = BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+            let id = history.start_new_conversation(terminal.id(), false, false, false, ctx);
+            history.set_provider_session(id, Some(saved_session()), ctx);
+            history.set_active_conversation_id(id, terminal.id(), ctx);
+            id
+        });
+        let controller_spawner = controller.update(&mut app, |controller, ctx| {
+            controller
+                .set_provider_auto_approve(id, auto_approve, ctx)
+                .unwrap();
+            ctx.spawner()
+        });
+        if let Some(denied_command) = denied_command {
+            AIExecutionProfilesModel::handle(&app).update(&mut app, |profiles, ctx| {
+                let profile = profiles
+                    .active_profile(Some(terminal.id()), ctx)
+                    .id()
+                    .clone();
+                profiles.add_to_command_denylist(
+                    &profile,
+                    &AgentModeCommandExecutionPredicate::new_regex(denied_command).unwrap(),
+                    ctx,
+                );
+            });
+        }
+        let foreground = runtime.update(&mut app, |runtime, ctx| {
+            runtime
+                .sessions
+                .insert(id, waiting_session(controller_spawner.clone()));
+            ctx.spawner()
+        });
+        let handler = permission_handler(
+            id,
+            "binding".to_owned(),
+            terminal.id(),
+            foreground,
+            controller_spawner,
+        );
+        let (pending_tx, pending_rx) = async_channel::bounded(1);
+        let observed = runtime.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&runtime, move |_, _, ctx| {
+                if observed
+                    .as_ref(ctx)
+                    .session(id)
+                    .is_some_and(|session| !session.approvals.is_empty())
+                {
+                    let _ = pending_tx.try_send(());
+                }
+            });
+        });
+        let response = handler(
+            protocol::METHOD_REQUEST_PERMISSION,
+            json!({
+                "sessionId": "saved-session",
+                "toolCall": {
+                    "toolCallId": "generic-command",
+                    "kind": "other",
+                    "title": command,
+                    "locations": [{"path": r"C:\Users\Public\Projects\MyWarp"}],
+                    "rawInput": {"command": command, "directories": [r"C:\Users\Public\Projects\MyWarp"]}
+                },
+                "options": [
+                    {"optionId": "broad", "kind": "allow_always"},
+                    {"optionId": "once", "kind": "allow_once"},
+                    {"optionId": "deny", "kind": "reject_once"}
+                ]
+            }),
+        );
+        match select(response, pending_rx.recv().boxed()).await {
+            Either::Left((response, _)) => response.unwrap(),
+            Either::Right(_) => {
+                panic!("The generic command unexpectedly required approval: {command}")
+            }
+        }
+    })
 }
 
 #[test]
@@ -597,10 +760,13 @@ fn provider_chat_permission_waits_for_an_exact_allow_once_decision() {
         });
         let (result_tx, mut result_rx) = oneshot::channel();
         let task = runtime.update(&mut app, |_, ctx| ctx.spawn(async move {
-            handler("session/request_permission", json!({"sessionId":"saved-session","toolCall":{"toolCallId":"call","title":"Run a command","kind":"execute","rawInput":{"command":"echo fixture > fixture.txt"}},"options":[{"optionId":"broad","kind":"allow_always"},{"optionId":"once","kind":"allow_once"},{"optionId":"deny","kind":"reject_once"}]})).await
+            handler("session/request_permission", json!({"sessionId":"saved-session","toolCall":{"toolCallId":"call","title":"Run a command","kind":"other","rawInput":{"command":"echo fixture > fixture.txt"}},"options":[{"optionId":"broad","kind":"allow_always"},{"optionId":"once","kind":"allow_once"},{"optionId":"deny","kind":"reject_once"}]})).await
         }, move |_, result, _| { let _ = result_tx.send(result); }));
         let approval = pending_rx.recv().await.unwrap();
         assert!(result_rx.try_recv().unwrap().is_none());
+        runtime.read(&app, |runtime, _| {
+            assert!(runtime.session(id).unwrap().approvals[0].can_auto_approve());
+        });
         runtime.update(&mut app, |runtime, ctx| {
             runtime.answer(id, Uuid::nil(), true, ctx)
         });
