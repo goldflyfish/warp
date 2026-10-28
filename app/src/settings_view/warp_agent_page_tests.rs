@@ -136,7 +136,8 @@ fn mywarp_provider_settings_search_filters_the_real_widgets() {
                 ("MCP", 1),
                 ("personal instructions", 1),
                 ("Sign up", 0),
-                ("", 9),
+                ("input hint", 0),
+                ("", 5),
             ] {
                 page.update_filter(query, ctx);
                 let FilteredPageType::Categorized {

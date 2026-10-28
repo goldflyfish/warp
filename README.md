@@ -9,9 +9,13 @@ Open **Settings → Agents → AI providers**.
 1. Choose OpenAI, Anthropic, OpenRouter, Z.ai, another provider from the searchable directory, or a custom OpenAI-compatible endpoint.
 2. Paste an API key and select **Save connection**, or use a sign-in method offered by that provider.
 3. Select a model and choose **Test connection**. A saved credential is marked configured; a successful model response verifies the connection.
-4. Choose **Use for new chats** to set the default model.
+4. Choose **Set as default** to use the selected model for new chats.
+
+Successful provider checks survive refreshes and application restarts. Verified providers show a yellow marker; the saved default provider shows green. Changing a provider's key, endpoint or tested model configuration requires a new check.
 
 The chat footer provides model selection, provider settings, reconnect, stop and tool approval controls. Reconnect an idle existing conversation after changing credentials or agent settings.
+
+Set **Auto-approve → On** in the chat footer to run commands and file edits without repeated approvals. The choice is saved to the active profile and survives new chats and application restarts. The Command Palette's **Toggle Auto-execute Mode** command (**Ctrl+Shift+I** on Windows) changes the same saved mode. Turning it off restores approval for changes, while file reads, searches and recognized read-only shell commands run automatically. Explicit command deny rules and protected file checks still apply.
 
 Supported subscription sign-ins are listed by the bundled runtime. OpenAI offers its supported browser and headless flows. Claude API keys work in native chat; Claude Code's own subscription login is available through the separate local CLI launcher under **Third party CLI agents**.
 

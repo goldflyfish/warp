@@ -5,7 +5,81 @@ use warpui::App;
 use super::super::connection::tests::{connect, rejecting_handler};
 use super::*;
 use crate::ai::agent::PassiveSuggestionTrigger;
+use crate::terminal::event::BlockWorkingDirectoryUpdatedEvent;
+use crate::terminal::model::block::BlockMetadata;
+use crate::terminal::model::terminal_model::BlockIndex;
+use crate::terminal::model_events::ModelEvent;
 use crate::test_util::terminal::{add_window_with_terminal, initialize_app_for_terminal_view};
+
+#[test]
+fn provider_profiles_preserve_denied_tools_when_routing_approval_to_the_profile() {
+    let mut permission = json!({"*":"allow", "bash":{"*":"allow", "rm *":"deny"}, "edit":"ask"});
+    require_profile_approval(&mut permission);
+    assert_eq!(
+        permission,
+        json!({"*":"ask", "bash":{"*":"ask", "rm *":"deny"}, "edit":"ask"})
+    );
+}
+
+#[test]
+fn provider_chat_identifies_read_only_tools() {
+    let read = serde_json::from_value(json!({"toolCallId":"read", "kind":"read"})).unwrap();
+    let search = serde_json::from_value(json!({"toolCallId":"search", "kind":"search"})).unwrap();
+    let edit = serde_json::from_value(
+        json!({"toolCallId":"edit", "kind":"edit", "locations":[{"path":"src/main.rs"}]}),
+    )
+    .unwrap();
+    let execute = serde_json::from_value(json!({"toolCallId":"execute", "kind":"execute", "rawInput":{"command":"Get-ChildItem -Force -Path ."}})).unwrap();
+    let write = serde_json::from_value(json!({"toolCallId":"write", "kind":"execute", "rawInput":{"command":"Set-Content -Path file.txt -Value changed"}})).unwrap();
+    let missing_command =
+        serde_json::from_value(json!({"toolCallId":"missing", "kind":"execute", "title":"ls"}))
+            .unwrap();
+    assert!(tool_is_read_only(
+        &read,
+        warp_util::path::EscapeChar::Backtick
+    ));
+    assert!(tool_is_read_only(
+        &search,
+        warp_util::path::EscapeChar::Backtick
+    ));
+    assert!(tool_is_read_only(
+        &execute,
+        warp_util::path::EscapeChar::Backtick
+    ));
+    assert!(!tool_is_read_only(
+        &edit,
+        warp_util::path::EscapeChar::Backtick
+    ));
+    assert!(!tool_is_read_only(
+        &write,
+        warp_util::path::EscapeChar::Backtick
+    ));
+    assert!(!tool_is_read_only(
+        &missing_command,
+        warp_util::path::EscapeChar::Backtick
+    ));
+}
+
+#[test]
+fn provider_chat_prompt_keeps_windows_directory_context_separate_from_the_user_query() {
+    let content = prompt_content(
+        "Is everything committed?".to_owned(),
+        r"C:\Users\Public\Projects\project with spaces",
+    )
+    .unwrap();
+    let content = serde_json::to_value(content).unwrap();
+
+    assert!(
+        content[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(r#""C:\\Users\\Public\\Projects\\project with spaces""#,)
+    );
+    assert_eq!(
+        content[1],
+        json!({"type":"text", "text":"Is everything committed?"})
+    );
+}
 
 fn saved_session() -> ProviderChatSession {
     ProviderChatSession {
@@ -14,7 +88,56 @@ fn saved_session() -> ProviderChatSession {
         cwd: "/project".to_owned(),
         session_id: Some("saved-session".to_owned()),
         model_id: Some("zai/model-a".to_owned()),
+        reasoning_effort: None,
     }
+}
+
+#[test]
+fn provider_profiles_do_not_fall_back_when_the_saved_model_is_unavailable() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let controller = terminal.read(&app, |terminal, _| terminal.ai_controller().clone());
+        let runtime = controller.read(&app, |controller, _| controller.provider_chat().clone());
+        let history = BlocklistAIHistoryModel::handle(&app);
+        let id = history.update(&mut app, |history, ctx| {
+            let id = history.start_new_conversation(terminal.id(), false, false, false, ctx);
+            history.set_provider_session(id, Some(saved_session()), ctx);
+            id
+        });
+        let controller = controller.update(&mut app, |_, ctx| ctx.spawner());
+        let (commands, receiver) = async_channel::unbounded();
+        runtime.update(&mut app, |runtime, ctx| {
+            let mut session = waiting_session(controller);
+            session.commands = commands;
+            session.busy = false;
+            session.models = vec![ModelChoice {
+                id: "zai/model-a".to_owned(),
+                label: "Model A".to_owned(),
+            }];
+            runtime.sessions.insert(id, session);
+            runtime.select_model(id, "unavailable/model".to_owned(), ctx);
+        });
+        runtime.read(&app, |runtime, _| {
+            let session = runtime.session(id).unwrap();
+            assert!(!session.ready);
+            assert_eq!(session.model_id.as_deref(), Some("unavailable/model"));
+            assert!(session.error.as_deref().unwrap().contains("no fallback"));
+        });
+        history.read(&app, |history, _| {
+            assert_eq!(
+                history
+                    .conversation(&id)
+                    .unwrap()
+                    .provider_session()
+                    .unwrap()
+                    .model_id
+                    .as_deref(),
+                Some("unavailable/model")
+            );
+        });
+        assert!(receiver.try_recv().is_err());
+    });
 }
 
 #[test]
@@ -51,6 +174,147 @@ fn provider_chat_attended_config_retains_provider_configuration() {
     assert_eq!(configured["model"], "fixture/demo");
     let unchanged: Value = serde_json::from_str(original).unwrap();
     assert_eq!(unchanged["permission"], "allow");
+}
+
+fn reasoning_options(current: &str) -> Value {
+    json!([
+        {"id":"model","category":"model","type":"select","currentValue":"zai/model-a","options":[{"value":"zai/model-a","name":"Model A"}]},
+        {"id":"provider-effort","category":"thought_level","type":"select","currentValue":current,"options":[{"name":"Effort","options":[{"value":"none","name":"Off"},{"value":"thinking","name":"Thinking"}]}]}
+    ])
+}
+
+#[test]
+fn provider_chat_reasoning_preserves_provider_values_and_labels() {
+    let (id, choices, selected) = setting_choices(&reasoning_options("thinking"), "thought_level");
+
+    assert_eq!(id.as_deref(), Some("provider-effort"));
+    assert_eq!(selected.as_deref(), Some("thinking"));
+    assert_eq!(
+        choices,
+        vec![
+            ModelChoice {
+                id: "none".into(),
+                label: "Off".into()
+            },
+            ModelChoice {
+                id: "thinking".into(),
+                label: "Thinking".into()
+            },
+        ]
+    );
+}
+
+#[test]
+fn provider_chat_model_without_reasoning_does_not_invent_efforts() {
+    let options = json!([{"id":"model","category":"model","type":"select","currentValue":"zai/model-a","options":[]}]);
+
+    assert_eq!(
+        setting_choices(&options, "thought_level"),
+        (None, vec![], None)
+    );
+}
+
+#[test]
+fn provider_chat_reasoning_change_uses_advertised_setting_and_requires_confirmation() {
+    let (connection, _, mut agent) = connect(rejecting_handler());
+    block_on(async {
+        let options = reasoning_options("none");
+        let client = set_reasoning_effort(&connection, "saved-session", &options, "thinking");
+        let server = async {
+            let request = agent.next_message().await;
+            assert_eq!(request["method"], "session/set_config_option");
+            assert_eq!(
+                request["params"],
+                json!({"sessionId":"saved-session","configId":"provider-effort","value":"thinking"})
+            );
+            agent.send(json!({"jsonrpc":"2.0","id":request["id"],"result":{"configOptions":reasoning_options("thinking")}})).await;
+        };
+
+        let (response, ()) = join(client, server).await;
+        assert_eq!(response.unwrap(), reasoning_options("thinking"));
+    });
+}
+
+#[test]
+fn provider_chat_unsupported_reasoning_is_rejected_without_a_fallback_rpc() {
+    let (connection, _, mut agent) = connect(rejecting_handler());
+    block_on(async {
+        let error = set_reasoning_effort(
+            &connection,
+            "saved-session",
+            &reasoning_options("none"),
+            "high",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not offer reasoning effort")
+        );
+        assert!(futures::poll!(Box::pin(agent.next_message())).is_pending());
+    });
+}
+
+#[test]
+fn provider_chat_unconfirmed_reasoning_change_is_rejected() {
+    let (connection, _, mut agent) = connect(rejecting_handler());
+    block_on(async {
+        let options = reasoning_options("none");
+        let client = set_reasoning_effort(&connection, "saved-session", &options, "thinking");
+        let server = async {
+            let request = agent.next_message().await;
+            agent.send(json!({"jsonrpc":"2.0","id":request["id"],"result":{"configOptions":reasoning_options("none")}})).await;
+        };
+
+        let (response, ()) = join(client, server).await;
+        assert!(
+            response
+                .unwrap_err()
+                .to_string()
+                .contains("did not confirm the requested reasoning effort")
+        );
+    });
+}
+
+#[test]
+fn provider_chat_reasoning_change_cannot_silently_switch_models() {
+    let (connection, _, mut agent) = connect(rejecting_handler());
+    block_on(async {
+        let options = reasoning_options("none");
+        let client = set_reasoning_effort(&connection, "saved-session", &options, "thinking");
+        let server = async {
+            let request = agent.next_message().await;
+            let mut changed = reasoning_options("thinking");
+            changed[0]["currentValue"] = json!("other/model");
+            agent
+                .send(
+                    json!({"jsonrpc":"2.0","id":request["id"],"result":{"configOptions":changed}}),
+                )
+                .await;
+        };
+
+        let (response, ()) = join(client, server).await;
+        assert!(
+            response
+                .unwrap_err()
+                .to_string()
+                .contains("did not confirm the requested reasoning effort and model")
+        );
+    });
+}
+
+#[test]
+fn provider_chat_older_sessions_restore_without_a_reasoning_preference() {
+    let session: ProviderChatSession = serde_json::from_value(json!({
+        "binding_id":"binding", "runtime":"opencode", "cwd":"/project",
+        "session_id":"saved-session", "model_id":"zai/model-a"
+    }))
+    .unwrap();
+
+    assert_eq!(session.reasoning_effort, None);
+    assert_eq!(session.model_id.as_deref(), Some("zai/model-a"));
 }
 
 #[test]
@@ -141,7 +405,9 @@ fn provider_chat_model_change_requires_confirmation_of_the_exact_model() {
     });
 }
 
-fn waiting_session() -> DesktopSession {
+fn waiting_session(controller: ModelSpawner<BlocklistAIController>) -> DesktopSession {
+    #[cfg(not(windows))]
+    drop(controller);
     let (commands, _) = async_channel::unbounded();
     let (cancel, _) = async_channel::unbounded();
     DesktopSession {
@@ -150,6 +416,8 @@ fn waiting_session() -> DesktopSession {
         session_id: Some("saved-session".to_owned()),
         models: Vec::new(),
         model_id: None,
+        reasoning_efforts: Vec::new(),
+        reasoning_effort: None,
         busy: true,
         ready: true,
         status: "Working".to_owned(),
@@ -168,7 +436,126 @@ fn waiting_session() -> DesktopSession {
             request_id: "request".to_owned(),
         }),
         task: None,
+        #[cfg(windows)]
+        controller,
+        #[cfg(windows)]
+        connecting: false,
+        #[cfg(windows)]
+        reload_pending: false,
     }
+}
+
+#[test]
+fn provider_chat_auto_approve_persists_the_active_profiles_write_permissions() {
+    use warpui::TypedActionView as _;
+
+    use crate::ai::execution_profiles::ActionPermission;
+    use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
+    use crate::settings::AgentModeCommandExecutionPredicate;
+    use crate::terminal::view::TerminalAction;
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let controller = terminal.read(&app, |terminal, _| terminal.ai_controller().clone());
+        let runtime = controller.read(&app, |controller, _| controller.provider_chat().clone());
+        let controller_spawner = controller.update(&mut app, |_, ctx| ctx.spawner());
+        let history = BlocklistAIHistoryModel::handle(&app);
+        let id = history.update(&mut app, |history, ctx| {
+            history.start_new_conversation(terminal.id(), false, false, false, ctx)
+        });
+        let (reply, mut answer) = oneshot::channel();
+        let (other_reply, mut other_answer) = oneshot::channel();
+        runtime.update(&mut app, |runtime, _| {
+            let mut session = waiting_session(controller_spawner);
+            session.approvals.push(Approval {
+                id: Uuid::new_v4(),
+                title: "Write a file".to_owned(),
+                details: String::new(),
+                can_allow: true,
+                kind: Some(protocol::ToolKind::Execute),
+                reply,
+            });
+            session.approvals.push(Approval {
+                id: Uuid::new_v4(),
+                title: "Another tool".to_owned(),
+                details: String::new(),
+                can_allow: true,
+                kind: Some(protocol::ToolKind::Other),
+                reply: other_reply,
+            });
+            runtime.sessions.insert(id, session);
+        });
+        history.update(&mut app, |history, ctx| {
+            history.set_provider_session(id, Some(saved_session()), ctx);
+            history.set_active_conversation_id(id, terminal.id(), ctx);
+        });
+        controller.read(&app, |controller, ctx| {
+            assert!(!controller.provider_auto_approve_enabled(ctx));
+        });
+        terminal.update(&mut app, |terminal, ctx| {
+            terminal.handle_action(&TerminalAction::ToggleAutoexecuteMode, ctx)
+        });
+        controller.read(&app, |controller, ctx| {
+            assert!(controller.provider_auto_approve_enabled(ctx));
+        });
+        assert_eq!(answer.try_recv().unwrap(), Some(true));
+        assert_eq!(other_answer.try_recv().unwrap(), None);
+        let profiles = AIExecutionProfilesModel::handle(&app);
+        let profile_id = profiles.read(&app, |profiles, ctx| {
+            profiles
+                .active_profile(Some(terminal.id()), ctx)
+                .id()
+                .clone()
+        });
+        let restored = app.add_model(|ctx| {
+            AIExecutionProfilesModel::new(&crate::LaunchMode::new_for_unit_test(), ctx)
+        });
+        restored.read(&app, |profiles, ctx| {
+            let profile = profiles.get_profile_by_id(&profile_id, ctx).unwrap();
+            assert_eq!(
+                profile.data().execute_commands,
+                ActionPermission::AlwaysAllow
+            );
+            assert_eq!(
+                profile.data().apply_code_diffs,
+                ActionPermission::AlwaysAllow
+            );
+        });
+        profiles.update(&mut app, |profiles, ctx| {
+            profiles.add_to_command_denylist(
+                &profile_id,
+                &AgentModeCommandExecutionPredicate::new_regex("blocked-command").unwrap(),
+                ctx,
+            );
+        });
+        let denylist = profiles.read(&app, |profiles, ctx| {
+            profiles
+                .get_profile_by_id(&profile_id, ctx)
+                .unwrap()
+                .data()
+                .command_denylist
+                .clone()
+        });
+        controller.read(&app, |controller, ctx| {
+            let call = serde_json::from_value(json!({"toolCallId":"write", "kind":"execute", "rawInput":{"command":"echo content > file.txt"}})).unwrap();
+            assert!(profile_allows_tool(controller, id, terminal.id(), &call, None, ctx));
+            let denied = serde_json::from_value(json!({"toolCallId":"denied", "kind":"execute", "rawInput":{"command":"blocked-command"}})).unwrap();
+            assert!(!profile_allows_tool(controller, id, terminal.id(), &denied, None, ctx));
+        });
+        controller.update(&mut app, |controller, ctx| {
+            controller
+                .set_provider_auto_approve(id, false, ctx)
+                .unwrap();
+            assert!(!controller.provider_auto_approve_enabled(ctx));
+        });
+        profiles.read(&app, |profiles, ctx| {
+            let profile = profiles.get_profile_by_id(&profile_id, ctx).unwrap();
+            assert_eq!(profile.data().execute_commands, ActionPermission::AlwaysAsk);
+            assert_eq!(profile.data().apply_code_diffs, ActionPermission::AlwaysAsk);
+            assert_eq!(profile.data().command_denylist, denylist);
+        });
+    });
 }
 
 #[test]
@@ -181,11 +568,13 @@ fn provider_chat_permission_waits_for_an_exact_allow_once_decision() {
             history.start_new_conversation(terminal.id(), false, false, false, ctx)
         });
         let runtime = controller.read(&app, |controller, _| controller.provider_chat().clone());
+        let controller_spawner = controller.update(&mut app, |_, ctx| ctx.spawner());
         let foreground = runtime.update(&mut app, |runtime, ctx| {
-            runtime.sessions.insert(id, waiting_session());
+            runtime
+                .sessions
+                .insert(id, waiting_session(controller_spawner.clone()));
             ctx.spawner()
         });
-        let controller_spawner = controller.update(&mut app, |_, ctx| ctx.spawner());
         let handler = permission_handler(
             id,
             "binding".to_owned(),
@@ -208,7 +597,7 @@ fn provider_chat_permission_waits_for_an_exact_allow_once_decision() {
         });
         let (result_tx, mut result_rx) = oneshot::channel();
         let task = runtime.update(&mut app, |_, ctx| ctx.spawn(async move {
-            handler("session/request_permission", json!({"sessionId":"saved-session","toolCall":{"toolCallId":"call","title":"Run a command","kind":"execute","rawInput":{"command":"echo fixture"}},"options":[{"optionId":"broad","kind":"allow_always"},{"optionId":"once","kind":"allow_once"},{"optionId":"deny","kind":"reject_once"}]})).await
+            handler("session/request_permission", json!({"sessionId":"saved-session","toolCall":{"toolCallId":"call","title":"Run a command","kind":"execute","rawInput":{"command":"echo fixture > fixture.txt"}},"options":[{"optionId":"broad","kind":"allow_always"},{"optionId":"once","kind":"allow_once"},{"optionId":"deny","kind":"reject_once"}]})).await
         }, move |_, result, _| { let _ = result_tx.send(result); }));
         let approval = pending_rx.recv().await.unwrap();
         assert!(result_rx.try_recv().unwrap().is_none());
@@ -237,8 +626,9 @@ fn provider_chat_stream_renders_in_native_history_without_a_warp_server_identity
         });
         let runtime = controller.read(&app, |controller, _| controller.provider_chat().clone());
         let (tx, rx) = async_channel::unbounded();
+        let controller_spawner = controller.update(&mut app, |_, ctx| ctx.spawner());
         let foreground = runtime.update(&mut app, |runtime, ctx| {
-            let mut session = waiting_session();
+            let mut session = waiting_session(controller_spawner);
             session.commands = tx;
             session.busy = false;
             session.active_turn = None;
@@ -271,6 +661,19 @@ fn provider_chat_stream_renders_in_native_history_without_a_warp_server_identity
                     .is_err()
             );
         });
+        let dispatcher = terminal.read(&app, |terminal, _| {
+            terminal.model_event_dispatcher().clone()
+        });
+        dispatcher.update(&mut app, |_, ctx| {
+            ctx.emit(ModelEvent::BlockWorkingDirectoryUpdated(
+                BlockWorkingDirectoryUpdatedEvent {
+                    block_metadata: BlockMetadata::new(None, Some("/new-project".to_owned())),
+                    block_index: BlockIndex::zero(),
+                    is_for_in_band_command: false,
+                    is_done_bootstrapping: true,
+                },
+            ));
+        });
         controller.update(&mut app, |controller, ctx| {
             controller.send_user_query_in_conversation("Hello provider".to_owned(), id, None, ctx);
         });
@@ -278,10 +681,12 @@ fn provider_chat_stream_renders_in_native_history_without_a_warp_server_identity
             mut turn,
             root,
             text,
+            cwd,
         } = rx.recv().await.unwrap()
         else {
             panic!("expected a native provider turn");
         };
+        assert_eq!(cwd.as_deref(), Some("/new-project"));
         controller.update(&mut app, |controller, ctx| {
             controller.send_user_query_in_conversation("Must wait".to_owned(), id, None, ctx);
         });
@@ -315,6 +720,7 @@ fn provider_chat_stream_renders_in_native_history_without_a_warp_server_identity
                         &controller_spawner,
                         &foreground,
                         text,
+                        cwd,
                     )
                     .await
                     .unwrap();
@@ -330,6 +736,13 @@ fn provider_chat_stream_renders_in_native_history_without_a_warp_server_identity
             let request = agent.next_message().await;
             assert_eq!(request["method"], "session/prompt");
             assert_eq!(request["params"]["sessionId"], "saved-session");
+            assert!(
+                request["params"]["prompt"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("/new-project")
+            );
+            assert_eq!(request["params"]["prompt"][1]["text"], "Hello provider");
             agent.send(json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wrong-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Wrong session"}}}})).await;
             agent.send(json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"saved-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Native provider reply"}}}})).await;
             agent
@@ -370,14 +783,18 @@ fn provider_chat_stream_renders_in_native_history_without_a_warp_server_identity
 fn provider_chat_clearing_a_pending_approval_rejects_it() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let controller = terminal.read(&app, |terminal, _| terminal.ai_controller().clone());
+        let controller = controller.update(&mut app, |_, ctx| ctx.spawner());
         let id = AIConversationId::new();
-        let mut session = waiting_session();
+        let mut session = waiting_session(controller);
         let (reply, answer) = oneshot::channel();
         session.approvals.push(Approval {
             id: Uuid::new_v4(),
             title: "Write a file".to_owned(),
             details: "fixture".to_owned(),
             can_allow: true,
+            kind: Some(protocol::ToolKind::Edit),
             reply,
         });
         let model = app.add_model(|ctx| DesktopAcp::new(EntityId::new(), ctx));
@@ -402,7 +819,10 @@ fn provider_chat_stop_sends_session_cancel_and_waits_for_the_runtime() {
         let runtime = controller.read(&app, |controller, _| controller.provider_chat().clone());
         let foreground = runtime.update(&mut app, |_, ctx| ctx.spawner());
         let controller = controller.update(&mut app, |_, ctx| ctx.spawner());
-        let mut turn = waiting_session().active_turn.clone().unwrap();
+        let mut turn = waiting_session(controller.clone())
+            .active_turn
+            .clone()
+            .unwrap();
         let (connection, notifications, mut agent) = connect(rejecting_handler());
         let connection = Arc::new(connection);
         let (cancel, cancels) = async_channel::unbounded();
@@ -427,6 +847,7 @@ fn provider_chat_stop_sends_session_cancel_and_waits_for_the_runtime() {
                         &controller,
                         &foreground,
                         "Stop this turn".to_owned(),
+                        None,
                     )
                     .await
                 },
@@ -439,6 +860,12 @@ fn provider_chat_stop_sends_session_cancel_and_waits_for_the_runtime() {
         let server = async {
             let prompt = agent.next_message().await;
             assert_eq!(prompt["method"], "session/prompt");
+            assert!(
+                prompt["params"]["prompt"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("/project")
+            );
             let cancel = agent.next_message().await;
             assert_eq!(cancel["method"], "session/cancel");
             assert_eq!(cancel["params"]["sessionId"], "saved-session");
@@ -465,12 +892,14 @@ fn provider_chat_removing_a_conversation_drops_its_pending_approvals() {
             history.start_new_conversation(terminal.id(), false, false, false, ctx)
         });
         let (reply, answer) = oneshot::channel();
-        let mut session = waiting_session();
+        let controller = controller.update(&mut app, |_, ctx| ctx.spawner());
+        let mut session = waiting_session(controller);
         session.approvals.push(Approval {
             id: Uuid::new_v4(),
             title: "Pending action".to_owned(),
             details: String::new(),
             can_allow: true,
+            kind: Some(protocol::ToolKind::Edit),
             reply,
         });
         runtime.update(&mut app, |runtime, _| {

@@ -1,15 +1,17 @@
 //! Local provider configuration shared by native Settings and attended chat.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write as _};
 use std::os::windows::io::AsRawHandle as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use futures::channel::oneshot;
+use instant::Instant;
 use jsonc_parser::ParseOptions;
 use jsonc_parser::cst::{CstInputValue, CstObject, CstRootNode};
 use reqwest::Method;
@@ -17,6 +19,11 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::windows_package;
+
+#[path = "provider_verification.rs"]
+mod verification;
+
+pub const CONNECTION_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub async fn offload<T: Send + 'static>(
     work: impl FnOnce() -> Result<T> + Send + 'static,
@@ -110,6 +117,63 @@ fn config_value(value: &Value) -> CstInputValue {
     }
 }
 
+fn read_api_auth(profile: &Path) -> Value {
+    fs::read(windows_package::runtime_dir(profile).join("providers/data/opencode/auth.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn has_api_auth(auth: &Value, id: &str) -> bool {
+    auth[id]["type"] == "api"
+        && auth[id]["key"]
+            .as_str()
+            .is_some_and(|key| !key.trim().is_empty())
+}
+
+pub fn api_key_configuration_file(profile: &Path, id: &str) -> Result<PathBuf> {
+    validate_provider_id(id)?;
+    let config = configuration_file(profile);
+    let text =
+        fs::read_to_string(&config).context("The provider configuration could not be opened")?;
+    let root = CstRootNode::parse(&text, &ParseOptions::default())
+        .context("The provider configuration could not be read")?;
+    let key = root
+        .object_value()
+        .and_then(|value| value.object_value("provider"))
+        .and_then(|value| value.object_value(id))
+        .and_then(|value| value.object_value("options"))
+        .and_then(|value| value.get("apiKey"))
+        .and_then(|value| value.value())
+        .and_then(|value| value.as_string_lit())
+        .and_then(|value| value.decoded_value().ok());
+    if let Some(key) = key.filter(|key| !key.trim().is_empty()) {
+        if let Some(path) = key
+            .strip_prefix("{file:")
+            .and_then(|value| value.strip_suffix('}'))
+        {
+            let path = PathBuf::from(path);
+            let path = if path.is_absolute() {
+                path
+            } else {
+                config
+                    .parent()
+                    .context("The provider folder is unavailable")?
+                    .join(path)
+            };
+            if !path.is_file() {
+                bail!("The saved API key file is missing. Save a replacement key in AI providers.");
+            }
+            return Ok(path);
+        }
+        return Ok(config);
+    }
+    if has_api_auth(&read_api_auth(profile), id) {
+        return Ok(windows_package::runtime_dir(profile).join("providers/data/opencode/auth.json"));
+    }
+    Ok(config)
+}
+
 pub fn runtime_executable() -> PathBuf {
     #[cfg(windows)]
     if let Some(runtime) = crate::paths::bundled_resources_dir()
@@ -130,6 +194,7 @@ pub struct ProviderInfo {
     pub id: String,
     pub name: String,
     pub connected: bool,
+    pub has_api_key: bool,
     pub models: BTreeMap<String, String>,
     pub endpoint: String,
     pub credential: String,
@@ -138,6 +203,7 @@ pub struct ProviderInfo {
 
 #[derive(Clone, Default)]
 pub struct Snapshot {
+    pub verified: BTreeSet<(String, String)>,
     pub providers: Vec<ProviderInfo>,
     pub default_model: String,
     pub agent: String,
@@ -209,13 +275,14 @@ impl ProviderServer {
         port: u16,
         password: &str,
     ) -> Result<std::process::Child> {
-        let workspace = windows_package::runtime_dir(profile).join("provider-check");
+        let runtime = windows_package::runtime_dir(profile);
+        let workspace = runtime.join("provider-check");
         fs::create_dir_all(&workspace)?;
-        fs::create_dir_all(windows_package::runtime_dir(profile).join("logs"))?;
+        fs::create_dir_all(runtime.join("logs"))?;
         let log = fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(windows_package::runtime_dir(profile).join("logs/provider-runtime.log"))?;
+            .open(runtime.join("logs/provider-runtime.log"))?;
         let mut command = command::blocking::Command::new(executable);
         command.creation_flags(0);
         command
@@ -287,9 +354,20 @@ impl ProviderServer {
     }
 
     fn request(&self, method: Method, route: &str, body: Option<&Value>) -> Result<Value> {
+        self.request_with_timeout(method, route, body, Duration::from_secs(90))
+    }
+
+    fn request_with_timeout(
+        &self,
+        method: Method,
+        route: &str,
+        body: Option<&Value>,
+        timeout: Duration,
+    ) -> Result<Value> {
         let mut request = self
             .client
             .request(method, format!("{}{route}", self.base))
+            .timeout(timeout)
             .basic_auth("mywarp", Some(&self.password));
         if let Some(body) = body {
             request = request.json(body);
@@ -317,6 +395,23 @@ impl ProviderServer {
         let config = configuration(&self.profile)?;
         let methods = self.request(Method::GET, "/provider/auth", None)?;
         let mut result = snapshot(&providers, &config, &methods)?;
+        result.verified = verification::load(&self.profile, &config, &providers);
+        if let Some(mode) = runtime_overrides(&self.profile)?["default_agent"].as_str() {
+            result.agent = mode.into();
+        }
+        let auth = read_api_auth(&self.profile);
+        for provider in &mut result.providers {
+            if provider.has_api_key {
+                continue;
+            }
+            if has_api_auth(&auth, &provider.id) {
+                provider.has_api_key = true;
+                provider.credential = "API key in the provider auth file".into();
+            } else if auth[&provider.id]["type"] == "oauth" {
+                provider.credential =
+                    "Provider sign-in in the auth file; connection not tested".into();
+            }
+        }
         let agents = self.request(Method::GET, "/agent", None)?;
         result.custom_agents = config["agent"]
             .as_object()
@@ -352,7 +447,7 @@ impl ProviderServer {
             bail!("This configuration section cannot be removed here.");
         }
         validate_provider_id(name)?;
-        let path = self.profile.join("Configurations/providers/opencode.jsonc");
+        let path = configuration_file(&self.profile);
         let original = fs::read_to_string(&path)?;
         let root = CstRootNode::parse(&original, &ParseOptions::default())
             .context("The provider configuration could not be read for editing")?;
@@ -407,7 +502,8 @@ impl ProviderServer {
         let previous_key = self.stored_key_reference(id)?;
         let mut created = None;
         if !key.trim().is_empty() {
-            let directory = self.profile.join("Configurations/providers/keys");
+            let directory =
+                windows_package::configuration_dir(&self.profile).join("providers/keys");
             fs::create_dir_all(&directory)?;
             let name = format!("mywarp-{id}-{}.key", Uuid::new_v4());
             let path = directory.join(&name);
@@ -454,8 +550,7 @@ impl ProviderServer {
     }
 
     fn stored_key_reference(&self, id: &str) -> Result<Option<String>> {
-        let text =
-            fs::read_to_string(self.profile.join("Configurations/providers/opencode.jsonc"))?;
+        let text = fs::read_to_string(configuration_file(&self.profile))?;
         let root = CstRootNode::parse(&text, &ParseOptions::default())
             .context("The provider configuration could not be read")?;
         Ok(root
@@ -546,48 +641,205 @@ impl ProviderServer {
     }
 
     pub fn test_connection(&self, id: &str, model: &str) -> Result<()> {
+        self.test_connection_cancellable(id, model, &AtomicBool::new(false))
+    }
+
+    pub fn test_connection_cancellable(
+        &self,
+        id: &str,
+        model: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<()> {
         validate_provider_id(id)?;
         if model.trim().is_empty() {
             bail!("Choose a model before testing this connection.");
         }
-        let session = self.request(Method::POST, "/session", Some(&json!({"title":"MyWarp connection check","permission":[{"permission":"*","pattern":"*","action":"deny"}]})))?;
+        verification::save(&self.profile, id, model, None)?;
+        let before = self.verification_fingerprint(id, model)?;
+        let deadline = Instant::now() + CONNECTION_CHECK_TIMEOUT;
+        let request = |method, route: &str, body: Option<&Value>| {
+            if cancelled.load(Ordering::Relaxed) {
+                bail!("Connection test cancelled.");
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                bail!(
+                    "The connection test timed out after 30 seconds. Check your network, endpoint and model availability, then retry."
+                );
+            }
+            self.request_with_timeout(method, route, body, remaining.min(Duration::from_secs(3)))
+        };
+        let session = request(
+            Method::POST,
+            "/session",
+            Some(
+                &json!({"title":"MyWarp connection check","permission":[{"permission":"*","pattern":"*","action":"deny"}]}),
+            ),
+        )?;
         let session_id = session["id"]
             .as_str()
             .context("The runtime could not create a connection check")?;
-        let result = self.request(Method::POST, &format!("/session/{session_id}/message"), Some(&json!({"model":{"providerID":id,"modelID":model},"agent":"plan","parts":[{"type":"text","text":"Reply with exactly MYWARP_CONNECTION_OK. Do not use any tools."}]})));
-        let _ = self.request(Method::DELETE, &format!("/session/{session_id}"), None);
-        let response = result?;
-        if !response["info"]["error"].is_null() {
-            match response["info"]["error"]["data"]["statusCode"].as_u64() {
-                Some(401 | 403) => bail!(
-                    "Authentication was rejected. Replace this provider's API key or sign in again."
+        let result = (|| {
+            request(
+                Method::POST,
+                &format!("/session/{session_id}/prompt_async"),
+                Some(
+                    &json!({"model":{"providerID":id,"modelID":model},"agent":"plan","parts":[{"type":"text","text":"Reply with exactly MYWARP_CONNECTION_OK. Do not use any tools."}]}),
                 ),
-                Some(402) => {
-                    bail!("The provider requires available credit or a different billing plan.")
+            )?;
+            loop {
+                let statuses = request(Method::GET, "/session/status", None)?;
+                // Billing failures can arrive as 429s and otherwise trigger long runtime retries.
+                if statuses[session_id]["type"] == "retry" {
+                    return Err(connection_failure(&statuses[session_id], id));
                 }
-                Some(429) => bail!(
-                    "The provider is rate limiting this connection. Wait briefly and try again."
-                ),
-                Some(404) => {
-                    bail!("The selected model was not found. Check the model ID and endpoint.")
+                let messages =
+                    request(Method::GET, &format!("/session/{session_id}/message"), None)?;
+                for message in messages.as_array().into_iter().flatten().rev() {
+                    if message["info"]["role"] != "assistant" {
+                        continue;
+                    }
+                    if !message["info"]["error"].is_null() {
+                        return Err(connection_failure(&message["info"]["error"], id));
+                    }
+                    if !message["info"]["time"]["completed"].is_null() {
+                        return validate_check_response(message);
+                    }
                 }
-                _ => bail!(
-                    "The provider rejected the connection check. Verify the credentials, model availability and provider balance."
-                ),
+                std::thread::park_timeout(Duration::from_millis(150));
             }
+        })();
+        self.cleanup_connection_check(session_id);
+        result?;
+        if cancelled.load(Ordering::Relaxed) {
+            bail!("Connection test cancelled.");
         }
-        let has_text = response["parts"].as_array().is_some_and(|parts| {
-            parts.iter().any(|p| {
-                p["type"] == "text"
-                    && p["text"]
-                        .as_str()
-                        .is_some_and(|text| !text.trim().is_empty())
-            })
+        let after = self.verification_fingerprint(id, model)?;
+        if before != after {
+            bail!(
+                "Configuration changed during the connection test. Test the updated connection again."
+            );
+        }
+        verification::save(&self.profile, id, model, Some(after))
+    }
+
+    fn verification_fingerprint(&self, id: &str, model: &str) -> Result<String> {
+        let providers = self.request(Method::GET, "/provider", None)?;
+        let provider = providers["all"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|provider| provider["id"] == id)
+            .context("The selected provider is unavailable")?;
+        verification::fingerprint(
+            &self.profile,
+            id,
+            model,
+            &configuration(&self.profile)?,
+            provider,
+        )
+    }
+
+    pub fn background_model(&self) -> Result<String> {
+        let config = configuration(&self.profile)?;
+        Ok(config["model"].as_str().unwrap_or_default().to_owned())
+    }
+
+    pub fn generate_text(
+        &self,
+        id: &str,
+        model: &str,
+        title: &str,
+        system: &str,
+        prompt: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<String> {
+        validate_provider_id(id)?;
+        if model.trim().is_empty() {
+            bail!("Choose a default model in AI providers before using background AI.");
+        }
+        let deadline = Instant::now() + CONNECTION_CHECK_TIMEOUT;
+        let request = |method, route: &str, body: Option<&Value>| {
+            if cancelled.load(Ordering::Relaxed) {
+                bail!("Background generation cancelled.");
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                bail!(
+                    "Background generation timed out after 30 seconds. Check your network, endpoint and model availability, then retry."
+                );
+            }
+            self.request_with_timeout(method, route, body, remaining.min(Duration::from_secs(3)))
+        };
+        let session = request(
+            Method::POST,
+            "/session",
+            Some(
+                &json!({"title":title,"permission":[{"permission":"*","pattern":"*","action":"deny"}]}),
+            ),
+        )?;
+        let session_id = session["id"]
+            .as_str()
+            .context("The runtime could not create a background session")?;
+        let result = (|| {
+            request(
+                Method::POST,
+                &format!("/session/{session_id}/prompt_async"),
+                Some(
+                    &json!({"model":{"providerID":id,"modelID":model},"agent":"plan","system":system,"tools":{"*":false},"parts":[{"type":"text","text":prompt}]}),
+                ),
+            )?;
+            loop {
+                let statuses = request(Method::GET, "/session/status", None)?;
+                // Billing failures can arrive as 429s and otherwise trigger long runtime retries.
+                if statuses[session_id]["type"] == "retry" {
+                    return Err(connection_failure(&statuses[session_id], id));
+                }
+                let messages =
+                    request(Method::GET, &format!("/session/{session_id}/message"), None)?;
+                for message in messages.as_array().into_iter().flatten().rev() {
+                    if message["info"]["role"] != "assistant" {
+                        continue;
+                    }
+                    if !message["info"]["error"].is_null() {
+                        return Err(connection_failure(&message["info"]["error"], id));
+                    }
+                    if !message["info"]["time"]["completed"].is_null() {
+                        let text = message["parts"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter(|part| part["type"] == "text")
+                            .filter_map(|part| part["text"].as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if text.trim().is_empty() {
+                            bail!("The provider returned an empty response.");
+                        }
+                        return Ok(text);
+                    }
+                }
+                std::thread::park_timeout(Duration::from_millis(150));
+            }
+        })();
+        self.cleanup_connection_check(session_id);
+        result
+    }
+
+    fn cleanup_connection_check(&self, session_id: &str) {
+        let client = self.client.clone();
+        let base = self.base.clone();
+        let password = self.password.clone();
+        let session_id = session_id.to_owned();
+        std::thread::spawn(move || {
+            for (method, suffix) in [(Method::POST, "/abort"), (Method::DELETE, "")] {
+                let _ = client
+                    .request(method, format!("{base}/session/{session_id}{suffix}"))
+                    .basic_auth("mywarp", Some(&password))
+                    .timeout(Duration::from_secs(2))
+                    .send();
+            }
         });
-        if !has_text {
-            bail!("The model did not return a response. Check its availability and try again.");
-        }
-        Ok(())
     }
 
     pub fn save_instructions(&self, text: &str) -> Result<Snapshot> {
@@ -604,6 +856,51 @@ impl ProviderServer {
         }
         self.patch(json!({"instructions":paths}))
     }
+}
+
+fn validate_check_response(response: &Value) -> Result<()> {
+    let has_text = response["parts"].as_array().is_some_and(|parts| {
+        parts.iter().any(|p| {
+            p["type"] == "text"
+                && p["text"]
+                    .as_str()
+                    .is_some_and(|text| !text.trim().is_empty())
+        })
+    });
+    if !has_text {
+        bail!("The model did not return a response. Check its availability and try again.");
+    }
+    Ok(())
+}
+
+fn connection_failure(error: &Value, provider: &str) -> anyhow::Error {
+    let description = error.to_string().to_ascii_lowercase();
+    let status = error["data"]["statusCode"].as_u64();
+    let message = if description.contains("insufficient balance")
+        || description.contains("no resource package")
+        || description.contains("1113")
+    {
+        if provider == "zai-coding-plan" {
+            "Z.AI reports insufficient balance or no eligible resource package (code 1113). Check that this key belongs to an active Coding Plan with access to the selected model. Create a Coding Plan key under Personal Coding Plan > Plan Overview."
+        } else {
+            "The provider reports insufficient balance or no eligible resource package. Check its billing and the API key's plan. Z.AI Coding Plan subscribers should select Z.AI Coding Plan rather than Z.AI Standard API."
+        }
+    } else {
+        match status {
+            Some(401 | 403) => {
+                "Authentication was rejected. Replace this provider's API key or sign in again."
+            }
+            Some(402) => "The provider requires available credit or a different billing plan.",
+            Some(429) => {
+                "The provider is rate limiting this connection. Wait briefly and try again."
+            }
+            Some(404) => "The selected model was not found. Check the model ID and endpoint.",
+            _ => {
+                "The provider could not complete the connection test. Check the selected model, credentials and quota, then retry. Automatic retries have been stopped."
+            }
+        }
+    };
+    anyhow::anyhow!(message)
 }
 
 fn snapshot(providers: &Value, config: &Value, methods: &Value) -> Result<Snapshot> {
@@ -638,22 +935,37 @@ fn snapshot(providers: &Value, config: &Value, methods: &Value) -> Result<Snapsh
         let options = &config["provider"][id]["options"];
         result.providers.push(ProviderInfo {
             id: id.into(),
-            name: provider["name"].as_str().unwrap_or(id).into(),
+            name: match id {
+                "zai-coding-plan" => "Z.AI Coding Plan",
+                "zai" => "Z.AI Standard API",
+                _ => provider["name"].as_str().unwrap_or(id),
+            }
+            .into(),
             connected: connected.iter().any(|value| value.as_str() == Some(id)),
+            has_api_key: options["apiKey"]
+                .as_str()
+                .is_some_and(|key| !key.trim().is_empty()),
             models: provider["models"]
                 .as_object()
                 .into_iter()
                 .flatten()
                 .map(|(id, model)| (id.clone(), model["name"].as_str().unwrap_or(id).into()))
                 .collect(),
-            endpoint: options["baseURL"].as_str().unwrap_or_default().into(),
+            endpoint: options["baseURL"]
+                .as_str()
+                .unwrap_or(match id {
+                    "zai-coding-plan" => "https://api.z.ai/api/coding/paas/v4",
+                    "zai" => "https://api.z.ai/api/paas/v4",
+                    _ => "",
+                })
+                .into(),
             credential: if options["apiKey"]
                 .as_str()
-                .is_some_and(|key| !key.is_empty())
+                .is_some_and(|key| !key.trim().is_empty())
             {
-                "API key saved in this profile"
+                "API key in the provider configuration"
             } else if connected.iter().any(|v| v.as_str() == Some(id)) {
-                "Sign-in or environment credential available"
+                "Detected by the runtime; no API key saved in this profile"
             } else {
                 "No credentials connected"
             }

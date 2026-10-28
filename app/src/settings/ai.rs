@@ -516,16 +516,26 @@ pub enum LocalAgentRuntime {
     OpenCode,
     Codex,
     ClaudeCode,
+    ZaiCodingPlan,
+    Zai,
 }
 
 impl LocalAgentRuntime {
-    pub const ALL: [Self; 3] = [Self::OpenCode, Self::Codex, Self::ClaudeCode];
+    pub const ALL: [Self; 5] = [
+        Self::OpenCode,
+        Self::Codex,
+        Self::ClaudeCode,
+        Self::ZaiCodingPlan,
+        Self::Zai,
+    ];
 
     pub fn display_name(self) -> &'static str {
         match self {
             Self::OpenCode => "OpenCode (multiple providers)",
             Self::Codex => "Codex",
             Self::ClaudeCode => "Claude Code",
+            Self::ZaiCodingPlan => "Z.AI Coding Plan (OpenCode)",
+            Self::Zai => "Z.AI Standard API (OpenCode)",
         }
     }
 
@@ -534,6 +544,8 @@ impl LocalAgentRuntime {
             Self::OpenCode => "opencode",
             Self::Codex => "codex",
             Self::ClaudeCode => "claude",
+            Self::ZaiCodingPlan => "opencode --model zai-coding-plan/glm-5.3",
+            Self::Zai => "opencode --model zai/glm-5.3",
         }
     }
 
@@ -542,6 +554,7 @@ impl LocalAgentRuntime {
             Self::OpenCode => "https://opencode.ai/docs/providers/",
             Self::Codex => "https://developers.openai.com/codex/auth/",
             Self::ClaudeCode => "https://code.claude.com/docs/en/setup",
+            Self::ZaiCodingPlan | Self::Zai => "https://docs.z.ai/devpack/tool/opencode",
         }
     }
 
@@ -555,6 +568,12 @@ impl LocalAgentRuntime {
             }
             Self::ClaudeCode => {
                 "Sign in inside Claude Code or configure an Anthropic API key there. Existing Claude Code authentication is reused."
+            }
+            Self::ZaiCodingPlan => {
+                "Uses OpenCode with Z.AI Coding Plan and GLM-5.3. Run /connect inside OpenCode, select Z.AI Coding Plan, and enter your Coding Plan API key. Use /models to change the model."
+            }
+            Self::Zai => {
+                "Uses OpenCode with Z.AI Standard API and GLM-5.3. Run /connect inside OpenCode, select Z.AI, and enter your API key. This uses your API balance; Coding Plan subscribers should choose Z.AI Coding Plan instead. Use /models to change the model."
             }
         }
     }
@@ -1313,6 +1332,18 @@ define_settings_group!(AISettings, settings: [
         private: false,
         toml_path: "agents.warp_agent.is_any_ai_enabled",
         description: "Controls whether all AI features are enabled.",
+    },
+    // Kept separate from the legacy flag, which older account onboarding could
+    // force off even when a local provider was configured.
+    native_agent_enabled: NativeAgentEnabled {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.warp_agent.native_agent_enabled",
+        description: "Enables the local provider agent without a Warp account.",
     },
     // This field should not be referenced directly to lookup active AI enablement -- use the
     // `is_active_ai_enabled()` getter.
@@ -2380,7 +2411,7 @@ impl AISettings {
 
     pub fn is_any_ai_enabled(&self, app: &AppContext) -> bool {
         if warp_core::mywarp::enabled() {
-            return true;
+            return *self.native_agent_enabled;
         }
         // Disable AI for anonymous and logged-out users.
         let is_anonymous_or_logged_out = AuthStateProvider::as_ref(app)
@@ -2460,8 +2491,7 @@ impl AISettings {
     }
 
     pub fn is_active_ai_enabled(&self, app: &warpui::AppContext) -> bool {
-        !warp_core::mywarp::enabled()
-            && self.is_any_ai_enabled(app)
+        self.is_any_ai_enabled(app)
             && *self.is_active_ai_enabled_internal
             && AppExecutionMode::as_ref(app).allows_active_ai()
     }
@@ -2497,7 +2527,6 @@ impl AISettings {
     pub fn is_voice_input_enabled(&self, app: &warpui::AppContext) -> bool {
         // Voice input is conditionally-compiled because it requires additional dependencies on some platforms.
         cfg!(feature = "voice_input")
-            && !warp_core::mywarp::enabled()
             && self.is_any_ai_enabled(app)
             && *self.voice_input_enabled_internal
     }

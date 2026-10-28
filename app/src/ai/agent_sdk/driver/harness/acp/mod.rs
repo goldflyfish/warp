@@ -26,6 +26,7 @@ mod mapping;
 mod model_config;
 mod policy;
 mod protocol;
+mod read_only;
 mod turn_driver;
 
 use std::collections::{HashMap, VecDeque};

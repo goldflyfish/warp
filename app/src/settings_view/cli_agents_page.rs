@@ -480,7 +480,7 @@ impl SettingsWidget for LocalAgentRuntimeWidget {
     type View = CLIAgentsPageView;
 
     fn search_terms(&self) -> &str {
-        "third party cli coding agent local runtime default preferred launch opencode codex claude"
+        "third party cli coding agent local runtime default preferred launch opencode codex claude zai z.ai glm"
     }
 
     fn render(

@@ -16,7 +16,7 @@ use warp_core::context_flag::ContextFlag;
 use warp_core::features::FeatureFlag;
 use warp_core::ui::theme::color::internal_colors;
 use warpui::elements::{
-    ChildView, Container, Element, Fill, Flex, MouseStateHandle, ParentElement,
+    ChildView, Container, Element, Fill, Flex, MouseStateHandle, ParentElement, SavePosition,
 };
 use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
 use warpui::ui_components::switch::SwitchStateHandle;
@@ -91,13 +91,18 @@ pub fn render_ai_setting_toggle<S: Setting>(
     let appearance = Appearance::as_ref(app);
     build_toggle_element(
         setting_label_element::<S>(label, is_setting_toggleable, tooltip_states, app),
-        render_ai_feature_switch(
-            switch_state,
-            is_setting_enabled,
-            is_setting_toggleable,
-            action,
-            app,
-        ),
+        SavePosition::new(
+            render_ai_feature_switch(
+                switch_state,
+                is_setting_enabled,
+                is_setting_toggleable,
+                action,
+                app,
+            ),
+            &format!("ai-setting-toggle-{}", S::storage_key()),
+        )
+        .for_single_frame()
+        .finish(),
         appearance,
         None,
     )

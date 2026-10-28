@@ -1174,6 +1174,8 @@ pub struct ProviderChatSession {
     pub cwd: String,
     pub session_id: Option<String>,
     pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 // Serializes to `conversation_data` column in `agent_conversations`.

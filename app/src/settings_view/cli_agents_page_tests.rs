@@ -22,7 +22,11 @@ fn local_agent_settings_search_separates_runtime_and_connection() {
                     LocalAgentRuntimeWidget::static_widget_id(),
                 ),
                 ("api key", LocalAgentConnectionWidget::static_widget_id()),
-                ("Z.ai", LocalAgentConnectionWidget::static_widget_id()),
+                ("Z.ai runtime", LocalAgentRuntimeWidget::static_widget_id()),
+                (
+                    "Z.ai connection",
+                    LocalAgentConnectionWidget::static_widget_id(),
+                ),
             ] {
                 assert!(page.update_filter(query, ctx).is_truthy());
                 let FilteredPageType::Uncategorized { widgets, title, .. } = page.get_filtered()

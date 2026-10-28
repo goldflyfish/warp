@@ -50,6 +50,10 @@ pub trait BlockClient: 'static + Send + Sync {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl BlockClient for ServerApi {
     async fn unshare_block(&self, block_uid: String) -> Result<(), anyhow::Error> {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            return super::local_blocks::remove(block_uid).await;
+        }
         let variables = UnshareBlockVariables {
             input: UnshareBlockInput { block_uid },
             request_context: get_request_context(),
@@ -79,6 +83,10 @@ impl BlockClient for ServerApi {
         show_prompt: bool,
         display_setting: DisplaySetting,
     ) -> Result<String, anyhow::Error> {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            return super::local_blocks::save(block, title).await;
+        }
         let variables = ShareBlockVariables {
             block: BlockInput {
                 command: block.command.as_deref(),
@@ -117,6 +125,10 @@ impl BlockClient for ServerApi {
     }
 
     async fn blocks_owned_by_user(&self) -> Result<Vec<Block>, anyhow::Error> {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            return super::local_blocks::list().await;
+        }
         let variables = GetBlocksForUserVariables {
             request_context: get_request_context(),
         };
@@ -142,6 +154,15 @@ impl BlockClient for ServerApi {
         &self,
         request: GenerateBlockTitleRequest,
     ) -> Result<GenerateBlockTitleResponse, anyhow::Error> {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            return super::provider_ai::generate(
+                "block-title",
+                r#"{"title":"a short descriptive title for the supplied command and output"}"#,
+                &request,
+            )
+            .await;
+        }
         let auth_token = self.get_or_refresh_access_token().await?;
         let request_builder = self.base_client.http_client().post(format!(
             "{}/ai/generate_block_title",

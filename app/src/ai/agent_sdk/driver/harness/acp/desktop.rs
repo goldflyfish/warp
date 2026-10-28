@@ -28,7 +28,8 @@ use super::turn_driver::stream_finished_for;
 use crate::ai::agent::CancellationReason;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::{
-    BlocklistAIController, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ExternalHarnessTurn,
+    BlocklistAIController, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
+    BlocklistAIPermissions, ExternalHarnessTurn,
 };
 use crate::persistence::model::ProviderChatSession;
 
@@ -43,7 +44,23 @@ pub(crate) struct Approval {
     pub title: String,
     pub details: String,
     pub can_allow: bool,
+    kind: Option<protocol::ToolKind>,
     reply: oneshot::Sender<bool>,
+}
+
+impl Approval {
+    pub(crate) fn can_auto_approve(&self) -> bool {
+        self.can_allow
+            && matches!(
+                self.kind,
+                Some(
+                    protocol::ToolKind::Execute
+                        | protocol::ToolKind::Edit
+                        | protocol::ToolKind::Delete
+                        | protocol::ToolKind::Move
+                )
+            )
+    }
 }
 
 pub(crate) struct DesktopSession {
@@ -52,6 +69,8 @@ pub(crate) struct DesktopSession {
     session_id: Option<String>,
     pub models: Vec<ModelChoice>,
     pub model_id: Option<String>,
+    pub reasoning_efforts: Vec<ModelChoice>,
+    pub reasoning_effort: Option<String>,
     pub busy: bool,
     pub ready: bool,
     pub status: String,
@@ -61,6 +80,12 @@ pub(crate) struct DesktopSession {
     cancel: async_channel::Sender<()>,
     active_turn: Option<ExternalHarnessTurn>,
     task: Option<SpawnedFutureHandle>,
+    #[cfg(windows)]
+    controller: ModelSpawner<BlocklistAIController>,
+    #[cfg(windows)]
+    connecting: bool,
+    #[cfg(windows)]
+    reload_pending: bool,
 }
 
 impl Drop for DesktopSession {
@@ -96,10 +121,62 @@ impl DesktopAcp {
                 }
             },
         );
+        #[cfg(windows)]
+        if ctx.has_singleton_model::<crate::configuration_watcher::ConfigurationWatcher>() {
+            ctx.subscribe_to_model(
+                &crate::configuration_watcher::ConfigurationWatcher::handle(ctx),
+                |me, _, event, ctx| match event {
+                    crate::configuration_watcher::ConfigurationEvent::Changed => {
+                        for session in me.sessions.values_mut() {
+                            session.reload_pending = true;
+                        }
+                        me.reload_configuration(ctx);
+                    }
+                    crate::configuration_watcher::ConfigurationEvent::Invalid(error) => {
+                        for session in me.sessions.values_mut() {
+                            session.reload_pending = false;
+                            session.error =
+                                Some(format!("Configuration was not reloaded: {error}"));
+                        }
+                        ctx.emit(());
+                    }
+                    crate::configuration_watcher::ConfigurationEvent::Checked => {}
+                },
+            );
+        }
         Self {
             terminal_id,
             sessions: HashMap::new(),
         }
+    }
+
+    #[cfg(windows)]
+    fn reload_configuration(&mut self, ctx: &mut ModelContext<Self>) {
+        let sessions: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.reload_pending && !session.busy && !session.connecting)
+            .map(|(id, session)| (*id, session.controller.clone()))
+            .collect();
+        for (id, controller) in sessions {
+            let config = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&id)
+                .and_then(|conversation| conversation.provider_session().cloned());
+            if let Some(config) = config {
+                self.sessions.remove(&id);
+                self.connect(id, config, controller, ctx);
+            }
+        }
+    }
+
+    #[cfg(all(windows, feature = "provider-settings-check"))]
+    pub(crate) fn configuration_has_model(&self, model: &str) -> bool {
+        self.sessions.values().any(|session| {
+            session.ready
+                && !session.connecting
+                && !session.reload_pending
+                && session.models.iter().any(|choice| choice.id == model)
+        })
     }
 
     pub(crate) fn session(&self, id: AIConversationId) -> Option<&DesktopSession> {
@@ -161,6 +238,8 @@ impl DesktopAcp {
                 session_id: config.session_id.clone(),
                 models: Vec::new(),
                 model_id: config.model_id.clone(),
+                reasoning_efforts: Vec::new(),
+                reasoning_effort: config.reasoning_effort.clone(),
                 busy: false,
                 ready: false,
                 status: "Connecting to OpenCode…".to_owned(),
@@ -170,6 +249,12 @@ impl DesktopAcp {
                 cancel,
                 active_turn: None,
                 task: None,
+                #[cfg(windows)]
+                controller: controller.clone(),
+                #[cfg(windows)]
+                connecting: true,
+                #[cfg(windows)]
+                reload_pending: false,
             },
         );
         let foreground = ctx.spawner();
@@ -198,6 +283,10 @@ impl DesktopAcp {
                     return;
                 }
                 session.busy = false;
+                #[cfg(windows)]
+                {
+                    session.connecting = false;
+                }
                 session.ready = false;
                 session.approvals.clear();
                 if let Err(error) = result {
@@ -224,6 +313,8 @@ impl DesktopAcp {
                         );
                     }
                 }
+                #[cfg(windows)]
+                me.reload_configuration(ctx);
                 ctx.emit(());
             },
         );
@@ -237,6 +328,7 @@ impl DesktopAcp {
         turn: ExternalHarnessTurn,
         root: String,
         text: String,
+        cwd: Option<String>,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
         let Some(session) = self.sessions.get_mut(&id) else {
@@ -256,7 +348,12 @@ impl DesktopAcp {
         session.active_turn = Some(turn.clone());
         let sent = session
             .commands
-            .try_send(Command::Prompt { turn, root, text })
+            .try_send(Command::Prompt {
+                turn,
+                root,
+                text,
+                cwd,
+            })
             .is_ok();
         ctx.emit(());
         sent
@@ -285,15 +382,58 @@ impl DesktopAcp {
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
-        if session.busy
-            || session.commands.is_closed()
-            || !session.models.iter().any(|choice| choice.id == model)
-        {
+        if session.busy || session.commands.is_closed() {
+            return;
+        }
+        if !session.models.iter().any(|choice| choice.id == model) {
+            session.ready = false;
+            session.status = "Choose an available model".to_owned();
+            session.error = Some(format!(
+                "The profile model '{model}' is unavailable. Connect its provider or choose another model; no fallback was used."
+            ));
+            session.model_id = Some(model.clone());
+            let history = BlocklistAIHistoryModel::handle(ctx);
+            if let Some(mut config) = history
+                .as_ref(ctx)
+                .conversation(&id)
+                .and_then(|conversation| conversation.provider_session().cloned())
+            {
+                config.model_id = Some(model);
+                config.reasoning_effort = None;
+                history.update(ctx, |history, ctx| {
+                    history.set_provider_session(id, Some(config), ctx)
+                });
+            }
+            ctx.emit(());
             return;
         }
         session.busy = true;
         session.status = "Changing model…".to_owned();
         let _ = session.commands.try_send(Command::Model(model));
+        ctx.emit(());
+    }
+
+    pub(crate) fn select_reasoning_effort(
+        &mut self,
+        id: AIConversationId,
+        effort: String,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        if session.busy
+            || session.commands.is_closed()
+            || !session
+                .reasoning_efforts
+                .iter()
+                .any(|choice| choice.id == effort)
+        {
+            return;
+        }
+        session.busy = true;
+        session.status = "Changing reasoning effort…".to_owned();
+        let _ = session.commands.try_send(Command::ReasoningEffort(effort));
         ctx.emit(());
     }
 
@@ -322,8 +462,10 @@ enum Command {
         turn: ExternalHarnessTurn,
         root: String,
         text: String,
+        cwd: Option<String>,
     },
     Model(String),
+    ReasoningEffort(String),
 }
 
 pub(crate) fn opening_actions(
@@ -418,6 +560,9 @@ async fn run(
                     .clone(),
             );
     }
+    if warp_core::mywarp::enabled() {
+        require_profile_approval(&mut attended["permission"]);
+    }
     process.env("OPENCODE_CONFIG_CONTENT", serde_json::to_string(&attended)?);
     let mut child = process.spawn().context("Could not start the AI runtime. Open Settings → AI providers and agent to check the provider connection.")?;
     #[cfg(target_os = "windows")]
@@ -467,7 +612,7 @@ async fn run(
     config.session_id = Some(settings.0);
     let mut options = settings.1;
     while notifications.try_recv().is_ok() {}
-    let selection = if let Some(model) = config.model_id.clone() {
+    let mut selection = if let Some(model) = config.model_id.clone() {
         if model_choices(&options)
             .1
             .iter()
@@ -489,18 +634,42 @@ async fn run(
     } else {
         Ok(())
     };
+    if selection.is_ok()
+        && let Some(effort) = config.reasoning_effort.as_deref()
+    {
+        selection = set_reasoning_effort(
+            &connection,
+            config.session_id.as_deref().unwrap(),
+            &options,
+            effort,
+        )
+        .await
+        .map(|updated| {
+            options = updated;
+        });
+    }
     match selection {
         Ok(()) => publish_settings(id, &mut config, &options, &foreground, &controller).await?,
         Err(error) => {
             let (_, choices, _) = model_choices(&options);
+            let (_, reasoning_efforts, reasoning_effort) =
+                setting_choices(&options, "thought_level");
             let message = format!("{error:#}");
             foreground
                 .spawn(move |me, ctx| {
                     if let Some(session) = me.sessions.get_mut(&id) {
                         session.models = choices;
-                        session.status = "Choose a model".to_owned();
+                        session.reasoning_efforts = reasoning_efforts;
+                        session.reasoning_effort = reasoning_effort;
+                        #[cfg(windows)]
+                        {
+                            session.connecting = false;
+                        }
+                        session.status = "Check model and reasoning effort".to_owned();
                         session.error = Some(message);
                     }
+                    #[cfg(windows)]
+                    me.reload_configuration(ctx);
                     ctx.emit(());
                 })
                 .await?;
@@ -533,10 +702,22 @@ async fn run(
                     }
                 }
             }
+            Command::ReasoningEffort(effort) => {
+                options = set_reasoning_effort(
+                    &connection,
+                    config.session_id.as_deref().unwrap(),
+                    &options,
+                    &effort,
+                )
+                .await
+                .context("Reasoning effort selection failed; reconnect before continuing")?;
+                publish_settings(id, &mut config, &options, &foreground, &controller).await?;
+            }
             Command::Prompt {
                 mut turn,
                 root,
                 text,
+                cwd,
             } => {
                 let mut mapper = AcpTurnMapper::new(root, turn.request_id.clone(), HashMap::new());
                 let result = prompt(
@@ -550,6 +731,7 @@ async fn run(
                     &controller,
                     &foreground,
                     text,
+                    cwd,
                 )
                 .await;
                 match result {
@@ -577,6 +759,8 @@ async fn run(
                             session.approvals.clear();
                             session.status = "Ready".to_owned();
                         }
+                        #[cfg(windows)]
+                        me.reload_configuration(ctx);
                         ctx.emit(());
                     })
                     .await?;
@@ -602,6 +786,18 @@ fn attended_config(existing: Option<&str>) -> Result<String> {
         .context("OpenCode inline config must be an object")?;
     object.insert("permission".to_owned(), json!("ask"));
     Ok(serde_json::to_string(&config)?)
+}
+
+fn require_profile_approval(permission: &mut Value) {
+    match permission {
+        Value::String(value) if value == "allow" => *value = "ask".to_owned(),
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                require_profile_approval(value);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Array(_) => {}
+    }
 }
 
 async fn initialize(
@@ -643,14 +839,17 @@ async fn initialize(
     }
 }
 
-fn model_choices(options: &Value) -> (Option<String>, Vec<ModelChoice>, Option<String>) {
+fn setting_choices(
+    options: &Value,
+    category: &str,
+) -> (Option<String>, Vec<ModelChoice>, Option<String>) {
     fn collect(options: &Value, result: &mut Vec<ModelChoice>) {
         if let Some(options) = options.as_array() {
             for option in options {
                 if let Some(value) = option["value"].as_str() {
                     result.push(ModelChoice {
                         id: value.to_owned(),
-                        label: format!("{} ({value})", option["name"].as_str().unwrap_or(value)),
+                        label: option["name"].as_str().unwrap_or(value).to_owned(),
                     });
                 } else {
                     collect(&option["options"], result);
@@ -661,7 +860,7 @@ fn model_choices(options: &Value) -> (Option<String>, Vec<ModelChoice>, Option<S
     let setting = options.as_array().and_then(|options| {
         options
             .iter()
-            .find(|setting| setting["category"] == "model" && setting["type"] == "select")
+            .find(|setting| setting["category"] == category && setting["type"] == "select")
     });
     let Some(setting) = setting else {
         return (None, Vec::new(), None);
@@ -673,6 +872,45 @@ fn model_choices(options: &Value) -> (Option<String>, Vec<ModelChoice>, Option<S
         choices,
         setting["currentValue"].as_str().map(str::to_owned),
     )
+}
+
+fn model_choices(options: &Value) -> (Option<String>, Vec<ModelChoice>, Option<String>) {
+    let (id, mut choices, selected) = setting_choices(options, "model");
+    for choice in &mut choices {
+        choice.label = format!("{} ({})", choice.label, choice.id);
+    }
+    (id, choices, selected)
+}
+
+async fn set_reasoning_effort(
+    connection: &AcpConnection,
+    session: &str,
+    options: &Value,
+    effort: &str,
+) -> Result<Value> {
+    let (config_id, choices, _) = setting_choices(options, "thought_level");
+    if !choices.iter().any(|choice| choice.id == effort) {
+        bail!(
+            "OpenCode does not offer reasoning effort '{effort}' for this model. Choose a supported effort; no fallback was used."
+        );
+    }
+    let updated = set_config_option(
+        connection,
+        session,
+        config_id
+            .as_deref()
+            .context("OpenCode did not advertise a reasoning effort setting")?,
+        effort,
+    )
+    .await?;
+    if setting_choices(&updated, "thought_level").2.as_deref() != Some(effort)
+        || model_choices(&updated).2 != model_choices(options).2
+    {
+        bail!(
+            "OpenCode did not confirm the requested reasoning effort and model; no prompt was sent."
+        );
+    }
+    Ok(updated)
 }
 
 async fn set_model(
@@ -687,7 +925,31 @@ async fn set_model(
             "OpenCode does not offer the saved model '{model}'. Choose an available model; no fallback was used."
         );
     }
-    let request = connection.request::<_, Value>(protocol::METHOD_SESSION_SET_CONFIG_OPTION, json!({"sessionId":session,"configId":config_id.context("OpenCode did not advertise a model setting")?,"value":model}));
+    let updated = set_config_option(
+        connection,
+        session,
+        config_id
+            .as_deref()
+            .context("OpenCode did not advertise a model setting")?,
+        model,
+    )
+    .await?;
+    if model_choices(&updated).2.as_deref() != Some(model) {
+        bail!("OpenCode did not confirm the requested model; no prompt was sent.");
+    }
+    Ok(updated)
+}
+
+async fn set_config_option(
+    connection: &AcpConnection,
+    session: &str,
+    config_id: &str,
+    value: &str,
+) -> Result<Value> {
+    let request = connection.request::<_, Value>(
+        protocol::METHOD_SESSION_SET_CONFIG_OPTION,
+        json!({"sessionId":session,"configId":config_id,"value":value}),
+    );
     let response = match select(
         Box::pin(request),
         Box::pin(Timer::after(Duration::from_secs(30))),
@@ -695,11 +957,8 @@ async fn set_model(
     .await
     {
         Either::Left((result, _)) => result?,
-        Either::Right(_) => bail!("OpenCode did not confirm the model change within 30 seconds."),
+        Either::Right(_) => bail!("OpenCode did not confirm the setting change within 30 seconds."),
     };
-    if model_choices(&response["configOptions"]).2.as_deref() != Some(model) {
-        bail!("OpenCode did not confirm the requested model; no prompt was sent.");
-    }
     Ok(response["configOptions"].clone())
 }
 
@@ -711,7 +970,9 @@ async fn publish_settings(
     controller: &ModelSpawner<BlocklistAIController>,
 ) -> Result<()> {
     let (_, choices, current) = model_choices(options);
+    let (_, reasoning_efforts, reasoning_effort) = setting_choices(options, "thought_level");
     config.model_id = current.or_else(|| config.model_id.clone());
+    config.reasoning_effort = reasoning_effort.clone();
     let saved = config.clone();
     controller
         .spawn(move |_, ctx| {
@@ -734,11 +995,17 @@ async fn publish_settings(
             if let Some(session) = me.sessions.get_mut(&id)
                 && session.binding_id == binding
             {
+                #[cfg(windows)]
+                {
+                    session.connecting = false;
+                }
                 session.ready = selected
                     .as_ref()
                     .is_some_and(|selected| choices.iter().any(|choice| choice.id == *selected));
                 session.models = choices;
                 session.model_id = selected;
+                session.reasoning_efforts = reasoning_efforts;
+                session.reasoning_effort = reasoning_effort;
                 session.session_id = session_id;
                 session.error = None;
                 session.busy = session.active_turn.is_some();
@@ -751,6 +1018,8 @@ async fn publish_settings(
                 }
                 .to_owned();
             }
+            #[cfg(windows)]
+            me.reload_configuration(ctx);
             ctx.emit(());
         })
         .await?;
@@ -785,6 +1054,26 @@ fn permission_handler(
                 .find(|option| option.kind == PermissionOptionKind::RejectOnce)
                 .map(|option| option.option_id.clone());
             let requested_session = value["sessionId"].as_str().map(str::to_owned);
+            let checked_binding = binding_id.clone();
+            let checked_session = requested_session.clone();
+            let active = foreground
+                .spawn(move |me, _| {
+                    me.sessions.get(&id).is_some_and(|session| {
+                        session.binding_id == checked_binding
+                            && session.session_id == checked_session
+                            && checked_session.is_some()
+                            && session.active_turn.is_some()
+                            && session.status != "Stopping…"
+                    })
+                })
+                .await
+                .map_err(RpcError::internal)?;
+            if !active {
+                return serde_json::to_value(RequestPermissionResponse {
+                    outcome: PermissionOutcome::Cancelled,
+                })
+                .map_err(RpcError::internal);
+            }
             let requested_binding = binding_id.clone();
             let folder = controller
                 .spawn(move |_, ctx| {
@@ -812,9 +1101,10 @@ fn permission_handler(
                     },
                     request => request,
                 });
+            let profile_call = params.tool_call.clone();
             let denied = controller
                 .spawn(move |controller, ctx| {
-                    request.map(|request| {
+                    let decision = request.map(|request| {
                         request.evaluate_for_conversation(
                             controller,
                             id,
@@ -822,11 +1112,22 @@ fn permission_handler(
                             controller.provider_escape_char(ctx),
                             ctx,
                         )
-                    })
+                    });
+                    let autoapprove = warp_core::mywarp::enabled()
+                        && (tool_is_read_only(&profile_call, controller.provider_escape_char(ctx))
+                            || profile_allows_tool(
+                                controller,
+                                id,
+                                terminal_id,
+                                &profile_call,
+                                folder.as_deref(),
+                                ctx,
+                            ));
+                    (decision, autoapprove)
                 })
                 .await
                 .map_err(RpcError::internal)?;
-            if let Some(PolicyDecision::Deny { reason }) = denied {
+            if let Some(PolicyDecision::Deny { reason }) = denied.0 {
                 foreground
                     .spawn(move |me, ctx| {
                         me.set_error(id, format!("Action denied by policy: {reason}"), ctx)
@@ -837,6 +1138,14 @@ fn permission_handler(
                     outcome: reject
                         .map(|option_id| PermissionOutcome::Selected { option_id })
                         .unwrap_or(PermissionOutcome::Cancelled),
+                })
+                .map_err(RpcError::internal);
+            }
+            if denied.1
+                && let Some(option_id) = allow.clone()
+            {
+                return serde_json::to_value(RequestPermissionResponse {
+                    outcome: PermissionOutcome::Selected { option_id },
                 })
                 .map_err(RpcError::internal);
             }
@@ -863,6 +1172,7 @@ fn permission_handler(
                             title,
                             details,
                             can_allow,
+                            kind: params.tool_call.kind,
                             reply,
                         });
                     }
@@ -881,6 +1191,123 @@ fn permission_handler(
     })
 }
 
+fn tool_is_read_only(
+    call: &protocol::ToolCallFields,
+    escape_char: warp_util::path::EscapeChar,
+) -> bool {
+    match call.kind {
+        Some(protocol::ToolKind::Read | protocol::ToolKind::Search | protocol::ToolKind::Think) => {
+            true
+        }
+        Some(protocol::ToolKind::Execute) => {
+            super::mapping::command_from_raw_input(call.raw_input.as_ref(), call.kind, "")
+                .is_some_and(|command| super::read_only::is_read_only(&command, escape_char))
+        }
+        Some(
+            protocol::ToolKind::Edit
+            | protocol::ToolKind::Delete
+            | protocol::ToolKind::Move
+            | protocol::ToolKind::Fetch
+            | protocol::ToolKind::SwitchMode
+            | protocol::ToolKind::Other
+            | protocol::ToolKind::Unknown,
+        )
+        | None => false,
+    }
+}
+
+fn profile_allows_tool(
+    controller: &BlocklistAIController,
+    id: AIConversationId,
+    terminal_id: EntityId,
+    call: &protocol::ToolCallFields,
+    folder: Option<&std::path::Path>,
+    ctx: &warpui::AppContext,
+) -> bool {
+    let permissions = BlocklistAIPermissions::as_ref(ctx);
+    let scope = controller.team_context(ctx);
+    let paths = || {
+        let mut paths: Vec<_> = call
+            .locations
+            .iter()
+            .flatten()
+            .map(|location| PathBuf::from(&location.path))
+            .collect();
+        if let Some(path) = super::mapping::path_from_raw_input(call.raw_input.as_ref()) {
+            paths.push(PathBuf::from(path));
+        }
+        if let Some((path, _, _)) = super::mapping::first_diff(call.content.as_deref()) {
+            paths.push(PathBuf::from(path));
+        }
+        paths
+            .into_iter()
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(|path| {
+                if path.is_absolute() {
+                    path
+                } else {
+                    folder.map(|folder| folder.join(&path)).unwrap_or(path)
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    match call.kind {
+        Some(protocol::ToolKind::Execute) => super::mapping::command_from_raw_input(
+            call.raw_input.as_ref(),
+            call.kind,
+            call.title.as_deref().unwrap_or_default(),
+        )
+        .is_some_and(|command| {
+            permissions
+                .can_autoexecute_command(
+                    &id,
+                    &command,
+                    controller.provider_escape_char(ctx),
+                    false,
+                    None,
+                    Some(terminal_id),
+                    &scope,
+                    ctx,
+                )
+                .is_allowed()
+        }),
+        Some(protocol::ToolKind::Edit | protocol::ToolKind::Delete | protocol::ToolKind::Move) => {
+            let paths = paths();
+            !paths.is_empty()
+                && permissions
+                    .can_write_files(&id, &paths, Some(terminal_id), &scope, ctx)
+                    .is_allowed()
+        }
+        Some(protocol::ToolKind::Read | protocol::ToolKind::Search) => {
+            let paths = paths();
+            !paths.is_empty()
+                && permissions
+                    .can_read_files_with_conversation(&id, paths, Some(terminal_id), &scope, ctx)
+                    .is_allowed()
+        }
+        Some(
+            protocol::ToolKind::Think
+            | protocol::ToolKind::Fetch
+            | protocol::ToolKind::SwitchMode
+            | protocol::ToolKind::Other
+            | protocol::ToolKind::Unknown,
+        )
+        | None => false,
+    }
+}
+
+fn prompt_content(text: String, cwd: &str) -> Result<Vec<ContentBlock>> {
+    Ok(vec![
+        ContentBlock::Text {
+            text: format!(
+                "<terminal_context>\nCurrent working directory: {}\nFor shell commands, explicitly set the workdir parameter to this directory. Resolve relative file paths against this directory and pass absolute paths to file tools. This directory supersedes directories from earlier messages or the session's initial working directory.\n</terminal_context>",
+                serde_json::to_string(cwd)?,
+            ),
+        },
+        ContentBlock::Text { text },
+    ])
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn prompt(
     id: AIConversationId,
@@ -893,6 +1320,7 @@ async fn prompt(
     controller: &ModelSpawner<BlocklistAIController>,
     foreground: &ModelSpawner<DesktopAcp>,
     text: String,
+    cwd: Option<String>,
 ) -> Result<StopReason> {
     let session_id = config
         .session_id
@@ -903,7 +1331,7 @@ async fn prompt(
             protocol::METHOD_SESSION_PROMPT,
             PromptParams {
                 session_id: session_id.to_owned(),
-                prompt: vec![ContentBlock::Text { text }],
+                prompt: prompt_content(text, cwd.as_deref().unwrap_or(&config.cwd))?,
             },
         )
         .await?

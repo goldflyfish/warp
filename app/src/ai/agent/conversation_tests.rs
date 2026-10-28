@@ -1564,6 +1564,7 @@ fn provider_chat_restoration_preserves_runtime_session_model_and_folder() {
             cwd: "/project".to_owned(),
             session_id: Some("session-original".to_owned()),
             model_id: Some("zai/model-a".to_owned()),
+            reasoning_effort: Some("high".to_owned()),
         };
         let data = AgentConversationData {
             provider_session: Some(config.clone()),

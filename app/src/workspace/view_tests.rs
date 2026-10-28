@@ -5858,6 +5858,14 @@ fn local_agent_tab_uses_saved_runtime_without_replacing_active_input() {
             (crate::settings::LocalAgentRuntime::OpenCode, "opencode"),
             (crate::settings::LocalAgentRuntime::Codex, "codex"),
             (crate::settings::LocalAgentRuntime::ClaudeCode, "claude"),
+            (
+                crate::settings::LocalAgentRuntime::ZaiCodingPlan,
+                "opencode --model zai-coding-plan/glm-5.3",
+            ),
+            (
+                crate::settings::LocalAgentRuntime::Zai,
+                "opencode --model zai/glm-5.3",
+            ),
         ] {
             AISettings::handle(&app).update(&mut app, |settings, ctx| {
                 settings

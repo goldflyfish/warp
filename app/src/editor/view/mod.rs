@@ -3611,7 +3611,7 @@ impl EditorView {
         self.set_placeholder_text_with_prefix("", text, ctx);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "provider-settings-check"))]
     pub fn placeholder_text(&self, prefix: &str) -> Option<&str> {
         self.placeholder_texts.get(prefix).map(String::as_str)
     }

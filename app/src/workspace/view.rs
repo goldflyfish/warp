@@ -15545,9 +15545,10 @@ impl Workspace {
                 #[cfg(not(feature = "local_fs"))]
                 let _ = rule_paths;
             }
-            SettingsViewEvent::OpenCustomRouterFile(path) => {
+            SettingsViewEvent::OpenCustomRouterFile(path)
+            | SettingsViewEvent::OpenProviderConfigFile(path) => {
                 #[cfg(feature = "local_fs")]
-                self.open_custom_router_file(path, ctx);
+                self.open_settings_config_file(path, ctx);
                 #[cfg(not(feature = "local_fs"))]
                 let _ = path;
             }
@@ -18214,13 +18215,9 @@ impl Workspace {
         });
     }
 
-    /// Opens a custom model router's YAML config file in Warp's own editor.
-    ///
-    /// Unlike most "open file" flows, this always uses the Warp code editor
-    /// rather than honoring the user's external/system editor preference, since
-    /// the button is specifically for editing the router config inside Warp.
+    /// Opens a settings configuration file in the built-in editor.
     #[cfg(feature = "local_fs")]
-    fn open_custom_router_file(&mut self, path: &Path, ctx: &mut ViewContext<Self>) {
+    fn open_settings_config_file(&mut self, path: &Path, ctx: &mut ViewContext<Self>) {
         let settings = EditorSettings::as_ref(ctx);
         let target = resolve_file_target_to_open_in_warp(path, settings, None);
         self.open_file_with_target(

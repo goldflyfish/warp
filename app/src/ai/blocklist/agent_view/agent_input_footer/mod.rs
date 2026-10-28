@@ -884,7 +884,8 @@ impl AgentInputFooter {
             },
         );
         // Subscribe to AIExecutionProfilesModel to potentially show/hide the profile selector button when profiles are added/removed
-        ctx.subscribe_to_model(&AIExecutionProfilesModel::handle(ctx), |_, _, _, ctx| {
+        ctx.subscribe_to_model(&AIExecutionProfilesModel::handle(ctx), |me, _, _, ctx| {
+            me.sync_fast_forward_button(ctx);
             ctx.notify();
         });
 
@@ -2155,6 +2156,10 @@ impl AgentInputFooter {
             .map(|c| c.autoexecute_any_action())
             .unwrap_or(false)
             || is_force_enabled;
+        #[cfg(not(target_family = "wasm"))]
+        let is_active = is_active
+            || (warp_core::mywarp::enabled()
+                && self.provider_controls.as_ref(ctx).auto_approve_enabled(ctx));
 
         let icon = if is_active {
             Icon::FastForwardFilled

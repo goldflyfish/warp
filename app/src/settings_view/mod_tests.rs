@@ -13,6 +13,32 @@ use super::*;
 use crate::appearance::Appearance;
 use crate::workspaces::workspace::{BillingMetadata, CustomerType};
 
+#[cfg(windows)]
+#[test]
+fn provider_model_search_keeps_the_configuration_panel_separate_from_behavior() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let mut page = super::warp_agent_page::mywarp_provider_page();
+            page.update_filter("verification", ctx);
+            let FilteredPageType::Categorized {
+                categories, title, ..
+            } = page.get_filtered()
+            else {
+                panic!("expected provider categories");
+            };
+            assert!(title.is_some());
+            assert_eq!(categories.len(), 1);
+            assert_eq!(categories[0].widgets.len(), 1);
+            page.update_filter("", ctx);
+            let FilteredPageType::Categorized { categories, .. } = page.get_filtered() else {
+                panic!("expected provider categories");
+            };
+            assert_eq!(categories.len(), 4);
+            assert!(!page.update_filter("input hint", ctx).is_truthy());
+        });
+    });
+}
+
 fn billing_metadata(customer_type: CustomerType) -> BillingMetadata {
     BillingMetadata {
         customer_type,
@@ -147,6 +173,7 @@ const ALL_SECTIONS: &[SettingsSection] = &[
     SettingsSection::WarpDrive,
     SettingsSection::Warpify,
     SettingsSection::WarpAgent,
+    SettingsSection::WarpAgentBehavior,
     SettingsSection::AgentProfiles,
     SettingsSection::AgentMCPServers,
     SettingsSection::Knowledge,
@@ -183,6 +210,7 @@ fn all_sections_list_is_exhaustive() {
             | SettingsSection::WarpDrive
             | SettingsSection::Warpify
             | SettingsSection::WarpAgent
+            | SettingsSection::WarpAgentBehavior
             | SettingsSection::AgentProfiles
             | SettingsSection::AgentMCPServers
             | SettingsSection::Knowledge
@@ -1180,6 +1208,47 @@ fn mywarp_settings_exclude_account_and_warp_services() {
     assert!(!SettingsSection::Teams.available_in_mywarp());
     assert!(!SettingsSection::Referrals.available_in_mywarp());
     assert!(SettingsSection::WarpAgent.available_in_mywarp());
+    assert!(SettingsSection::WarpAgentBehavior.available_in_mywarp());
+    assert!(SettingsSection::AgentProfiles.available_in_mywarp());
     assert!(SettingsSection::Appearance.available_in_mywarp());
     assert!(SettingsSection::ThirdPartyCLIAgents.available_in_mywarp());
+}
+
+#[test]
+fn behavior_search_restores_original_input_controls_without_provider_configuration() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let mut page = PageType::new_categorized(
+                vec![Category::new(
+                    "Input",
+                    super::warp_agent_page::behavior_input_widgets(),
+                )],
+                Some(PageTitle::new("Warp Agent")),
+            );
+            page.update_filter("", ctx);
+            let FilteredPageType::Categorized { categories, .. } = page.get_filtered() else {
+                panic!("expected behavior categories");
+            };
+            let original_count = categories[0].widgets.len();
+            assert!(matches!(
+                page.update_filter("input hint", ctx),
+                MatchData::Countable(1)
+            ));
+            let FilteredPageType::Categorized {
+                categories, title, ..
+            } = page.get_filtered()
+            else {
+                panic!("expected behavior categories");
+            };
+            assert!(title.is_some());
+            assert_eq!(categories.len(), 1);
+            assert_eq!(categories[0].widgets.len(), 1);
+            assert!(!page.update_filter("verification", ctx).is_truthy());
+            page.update_filter("", ctx);
+            let FilteredPageType::Categorized { categories, .. } = page.get_filtered() else {
+                panic!("expected behavior categories");
+            };
+            assert_eq!(categories[0].widgets.len(), original_count);
+        });
+    });
 }

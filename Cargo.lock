@@ -15681,6 +15681,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-broadcast",
+ "base64 0.22.1",
  "cfg-if",
  "chrono",
  "command",
@@ -15715,6 +15716,7 @@ dependencies = [
  "serde_yaml 0.8.26",
  "settings",
  "settings_value",
+ "sha2 0.10.9",
  "shellexpand",
  "string-offset",
  "strum 0.27.1",

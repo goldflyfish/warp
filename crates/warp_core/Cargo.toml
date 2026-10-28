@@ -74,6 +74,8 @@ objc2-foundation = { workspace = true, features = [
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+base64.workspace = true
+sha2.workspace = true
 jsonc-parser = { version = "0.34", features = ["cst", "serde"] }
 command.workspace = true
 tempfile.workspace = true

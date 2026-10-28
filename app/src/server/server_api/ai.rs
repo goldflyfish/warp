@@ -169,7 +169,6 @@ use crate::ai::llms::{
     AvailableLLMs, DisableReason, LLMContextWindow, LLMInfo, LLMModelHost, LLMSpec,
     LLMUsageMetadata, ModelsByFeature, RoutingHostConfig,
 };
-#[cfg(feature = "agent_mode_evals")]
 use crate::ai::request_usage_model::RequestLimitInfo;
 use crate::ai::{AICreditAvailability, RequestUsageInfo};
 use crate::ai_assistant::execution_context::WarpAiExecutionContext;
@@ -2021,6 +2020,10 @@ impl AIClient for ServerApi {
         // TODO: use relevant context from RequestContext and deprecate usage of ai_execution_context
         _ai_execution_context: Option<WarpAiExecutionContext>,
     ) -> Result<Vec<AIGeneratedCommand>, GenerateCommandsFromNaturalLanguageError> {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            return super::provider_ai::generate("command-search", r#"[{"command":"a command satisfying the user prompt","description":"what it does","parameters":[]}]"#, &serde_json::json!({"prompt":prompt})).await.map_err(|_| GenerateCommandsFromNaturalLanguageError::AiProviderError);
+        }
         let default_err = GenerateCommandsFromNaturalLanguageError::Other;
 
         let variables = GenerateCommandsVariables {
@@ -2060,6 +2063,28 @@ impl AIClient for ServerApi {
         // TODO: use relevant context from RequestContext and deprecate usage of ai_execution_context
         _ai_execution_context: Option<WarpAiExecutionContext>,
     ) -> anyhow::Result<GenerateDialogueResult> {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            let transcript: Vec<_> = transcript.iter().map(|part| serde_json::json!({"user":part.raw_user_prompt(),"assistant":part.raw_assistant_answer()})).collect();
+            let response: serde_json::Value = super::provider_ai::generate(
+                "assistant-dialogue",
+                r#"{"answer":"answer the user's question using the supplied conversation"}"#,
+                &serde_json::json!({"prompt":prompt,"transcript":transcript}),
+            )
+            .await?;
+            return Ok(GenerateDialogueResult::Success {
+                answer: response["answer"]
+                    .as_str()
+                    .context("The provider returned no answer")?
+                    .into(),
+                truncated: false,
+                request_limit_info: RequestLimitInfo {
+                    is_unlimited: true,
+                    ..Default::default()
+                },
+                transcript_summarized: false,
+            });
+        }
         let graphql_transcript: Vec<TranscriptPartGraphql> = transcript
             .into_iter()
             .map(|part| TranscriptPartGraphql {
@@ -2112,6 +2137,10 @@ impl AIClient for ServerApi {
         &self,
         command: String,
     ) -> Result<GeneratedCommandMetadata, GeneratedCommandMetadataError> {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            return super::provider_ai::generate("command-metadata", r#"{"command":"the supplied command","title":"a short title","description":"what it does","arguments":[]}"#, &serde_json::json!({"command":command})).await.map_err(|_| GeneratedCommandMetadataError::Other);
+        }
         let default_err = GeneratedCommandMetadataError::Other;
         let variables = GenerateMetadataForCommandVariables {
             input: GenerateMetadataForCommandInput { command },
@@ -2147,6 +2176,17 @@ impl AIClient for ServerApi {
 
     #[cfg(feature = "agent_mode_evals")]
     async fn get_request_limit_info(&self) -> Result<RequestUsageInfo, anyhow::Error> {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            return Ok(RequestUsageInfo {
+                request_limit_info: RequestLimitInfo {
+                    is_unlimited: true,
+                    is_unlimited_voice: true,
+                    ..Default::default()
+                },
+                bonus_grants: vec![],
+            });
+        }
         Ok(RequestUsageInfo {
             request_limit_info: RequestLimitInfo::new_for_evals(),
             bonus_grants: vec![],
@@ -2155,6 +2195,16 @@ impl AIClient for ServerApi {
 
     #[cfg(not(feature = "agent_mode_evals"))]
     async fn get_request_limit_info(&self) -> Result<RequestUsageInfo, anyhow::Error> {
+        if warp_core::mywarp::enabled() {
+            return Ok(RequestUsageInfo {
+                request_limit_info: RequestLimitInfo {
+                    is_unlimited: true,
+                    is_unlimited_voice: true,
+                    ..Default::default()
+                },
+                bonus_grants: vec![],
+            });
+        }
         let variables = GetRequestLimitInfoVariables {
             request_context: get_request_context(),
         };
@@ -2216,6 +2266,9 @@ impl AIClient for ServerApi {
 
     #[cfg(not(feature = "agent_mode_evals"))]
     async fn get_ai_credit_availability(&self) -> Result<AICreditAvailability, anyhow::Error> {
+        if warp_core::mywarp::enabled() {
+            return Ok(AICreditAvailability::available_with_source(None));
+        }
         let variables = GetAICreditAvailabilityVariables {
             request_context: get_request_context(),
         };
@@ -2308,6 +2361,10 @@ impl AIClient for ServerApi {
     }
 
     async fn get_feature_model_choices(&self) -> Result<ModelsByFeature, anyhow::Error> {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            return super::provider_ai::model_choices().await;
+        }
         let variables = GetFeatureModelChoicesVariables {
             request_context: get_request_context(),
         };
@@ -2368,6 +2425,10 @@ impl AIClient for ServerApi {
         &self,
         referrer: Option<String>,
     ) -> Result<ModelsByFeature, anyhow::Error> {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            return super::provider_ai::model_choices().await;
+        }
         // This resolver is public; it does not require an auth token. We must NOT go through
         // `send_graphql_request`, which awaits `get_or_refresh_access_token()`
         let variables = FreeAvailableModelsVariables {
@@ -3528,6 +3589,21 @@ impl AIClient for ServerApi {
         &self,
         request: GenerateCodeReviewContentRequest,
     ) -> Result<GenerateCodeReviewContentResponse, anyhow::Error> {
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            let schema = match request.output_type {
+                crate::ai::generate_code_review_content::api::OutputType::CommitMessage => {
+                    r#"{"content":"a concise commit message describing the supplied diff"}. Use imperative mood; no markdown fences."#
+                }
+                crate::ai::generate_code_review_content::api::OutputType::PrTitle => {
+                    r#"{"content":"a concise pull request title describing the supplied diff"}. No markdown fences."#
+                }
+                crate::ai::generate_code_review_content::api::OutputType::PrDescription => {
+                    r#"{"content":"a pull request description summarizing the supplied changes and any validation actually shown"}. Do not invent testing."#
+                }
+            };
+            return super::provider_ai::generate("code-review", schema, &request).await;
+        }
         let auth_token = self.get_or_refresh_access_token().await?;
         let request_builder = self.base_client.http_client().post(format!(
             "{}/ai/generate_code_review_content",

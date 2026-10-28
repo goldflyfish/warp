@@ -112,6 +112,13 @@ impl View for ExecutionProfileView {
             .and_then(|id| llm_preferences.get_llm_info(id, app))
             .map(|info| info.display_name.clone())
             .unwrap_or_else(|| {
+                if warp_core::mywarp::enabled() {
+                    return profile
+                        .base_model
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "Provider default".to_owned());
+                }
                 llm_preferences
                     .get_default_base_model(&scope, app)
                     .display_name
@@ -124,6 +131,13 @@ impl View for ExecutionProfileView {
             .and_then(|id| llm_preferences.get_llm_info(id, app))
             .map(|info| info.display_name.clone())
             .unwrap_or_else(|| {
+                if warp_core::mywarp::enabled() {
+                    return profile
+                        .cli_agent_model
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "Provider default".to_owned());
+                }
                 llm_preferences
                     .get_default_cli_agent_model(&scope, app)
                     .display_name

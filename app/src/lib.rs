@@ -119,6 +119,8 @@ mod workspaces;
 pub mod ai_assistant;
 pub mod appearance;
 pub mod channel;
+#[cfg(windows)]
+mod configuration_watcher;
 pub mod editor;
 pub mod features;
 pub mod input_suggestions;
@@ -1371,6 +1373,11 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
 
         #[cfg(enable_crash_recovery)]
         ctx.add_singleton_model(move |_ctx| crash_recovery);
+
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            ctx.add_singleton_model(configuration_watcher::ConfigurationWatcher::new);
+        }
 
         let app_state = initialize_app(
             &launch_mode,

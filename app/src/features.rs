@@ -544,6 +544,14 @@ fn enabled_features() -> HashSet<FeatureFlag> {
     ]);
 
     if warp_core::mywarp::enabled() {
+        flags.extend([
+            FeatureFlag::FileBackedExecutionProfiles,
+            FeatureFlag::ProfilesDesignRevamp,
+            FeatureFlag::MultiProfile,
+            FeatureFlag::SharedBlockTitleGeneration,
+            FeatureFlag::GitOperationsInCodeReview,
+            FeatureFlag::PromptSuggestionsViaMAA,
+        ]);
         flags.retain(|flag| !MYWARP_DISABLED_FEATURES.contains(flag));
     }
     flags

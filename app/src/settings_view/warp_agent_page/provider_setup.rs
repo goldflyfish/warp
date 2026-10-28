@@ -1,10 +1,18 @@
 //! Provider settings use the same profile and runtime as the native chat footer.
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context as _, bail};
+use instant::Instant;
 use serde_json::{Value, json};
-use warp_core::provider_setup::{ProviderServer, Snapshot, offload};
-use warpui::elements::SavePosition;
+use warp_core::provider_setup::{CONNECTION_CHECK_TIMEOUT, ProviderServer, Snapshot, offload};
+use warpui::elements::new_scrollable::SingleAxisConfig;
+use warpui::elements::{
+    ClippedScrollStateHandle, NewScrollable, SavePosition, ScrollTarget, ScrollToPositionMode,
+};
+use warpui::platform::Cursor;
+use warpui::units::Pixels;
 
 use super::*;
 
@@ -13,9 +21,12 @@ pub enum ProviderSetupAction {
     SelectProvider(String),
     SelectModel(String),
     Refresh,
+    OpenConfiguration,
+    OpenApiKeyFile,
     Save,
     Disconnect,
     Test,
+    CancelTest,
     DefaultModel,
     Authorize(usize),
     FinishAuthorization,
@@ -44,10 +55,32 @@ enum FeedbackScope {
     Mcp,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ProviderMarker {
+    Default,
+    Verified,
+    Untested,
+}
+
+fn provider_marker(snapshot: &Snapshot, id: &str) -> ProviderMarker {
+    if snapshot
+        .default_model
+        .split_once('/')
+        .is_some_and(|(provider, _)| provider == id)
+    {
+        ProviderMarker::Default
+    } else if snapshot.verified.iter().any(|(provider, _)| provider == id) {
+        ProviderMarker::Verified
+    } else {
+        ProviderMarker::Untested
+    }
+}
+
 fn feedback_scope(action: &ProviderSetupAction) -> FeedbackScope {
     match action {
         ProviderSetupAction::SelectModel(_)
         | ProviderSetupAction::Test
+        | ProviderSetupAction::CancelTest
         | ProviderSetupAction::DefaultModel => FeedbackScope::Models,
         ProviderSetupAction::AgentMode(_)
         | ProviderSetupAction::ShowProfileEditor(_)
@@ -67,6 +100,11 @@ fn feedback_scope(action: &ProviderSetupAction) -> FeedbackScope {
 
 pub(super) struct ProviderSetup {
     server: Option<Arc<ProviderServer>>,
+    reload_pending: bool,
+    configuration_generation: u64,
+    loaded_endpoint: String,
+    loaded_custom_model: String,
+    loaded_instructions: String,
     mcp_type: String,
     show_profile_editor: bool,
     mcp_type_dropdown: ViewHandle<Dropdown<WarpAgentPageAction>>,
@@ -92,8 +130,12 @@ pub(super) struct ProviderSetup {
     instructions: ViewHandle<EditorView>,
     mcp_name: ViewHandle<EditorView>,
     mcp_command: ViewHandle<EditorView>,
-    quick: [MouseStateHandle; 4],
-    buttons: [MouseStateHandle; 13],
+    provider_rows: BTreeMap<String, MouseStateHandle>,
+    model_rows: BTreeMap<String, MouseStateHandle>,
+    model_scroll: ClippedScrollStateHandle,
+    connection_check: Option<(Instant, Arc<AtomicBool>)>,
+    cancel_test: MouseStateHandle,
+    buttons: [MouseStateHandle; 15],
     oauth_buttons: Vec<MouseStateHandle>,
     mcp_buttons: Vec<[MouseStateHandle; 3]>,
 }
@@ -148,9 +190,10 @@ impl ProviderSetup {
         let provider_dropdown = ctx.add_typed_action_view(FilterableDropdown::new);
         let model_dropdown = ctx.add_typed_action_view(FilterableDropdown::new);
         provider_dropdown.update(ctx, |dropdown, ctx| {
-            dropdown.set_placeholder("Choose a provider", ctx);
+            dropdown.set_placeholder("+ Add provider", ctx);
             dropdown.set_top_bar_height(36., ctx);
-            dropdown.set_top_bar_max_width(700.);
+            dropdown.set_top_bar_max_width(170.);
+            dropdown.set_menu_width(340., ctx);
         });
         model_dropdown.update(ctx, |dropdown, ctx| {
             dropdown.set_placeholder("Choose a model", ctx);
@@ -230,6 +273,39 @@ impl ProviderSetup {
         {
             instructions.update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
         }
+        let loaded_instructions = instructions.as_ref(ctx).buffer_text(ctx);
+        if ctx.has_singleton_model::<crate::configuration_watcher::ConfigurationWatcher>() {
+            ctx.subscribe_to_model(
+                &crate::configuration_watcher::ConfigurationWatcher::handle(ctx),
+                |me, _, event, ctx| {
+                    let Some(state) = me.provider_setup.as_mut() else {
+                        return;
+                    };
+                    match event {
+                        crate::configuration_watcher::ConfigurationEvent::Changed => {
+                            state.configuration_generation += 1;
+                            state.snapshot.verified.clear();
+                            state.reload_pending = true;
+                        }
+                        crate::configuration_watcher::ConfigurationEvent::Invalid(error) => {
+                            state.configuration_generation += 1;
+                            state.snapshot.verified.clear();
+                            if let Some((_, cancelled)) = &state.connection_check {
+                                cancelled.store(true, Ordering::Relaxed);
+                            }
+                            state.reload_pending = false;
+                            state.feedback_scope = FeedbackScope::Connection;
+                            state.status = format!("Configuration was not reloaded: {error}");
+                            state.error = true;
+                            ctx.notify();
+                            return;
+                        }
+                        crate::configuration_watcher::ConfigurationEvent::Checked => {}
+                    }
+                    me.refresh_provider_configuration(ctx);
+                },
+            );
+        }
         let mut me = Self {
             mcp_type: "remote".into(),
             show_profile_editor: false,
@@ -243,6 +319,11 @@ impl ProviderSetup {
                 ctx,
             ),
             server: None,
+            reload_pending: false,
+            configuration_generation: 0,
+            loaded_endpoint: String::new(),
+            loaded_custom_model: String::new(),
+            loaded_instructions,
             snapshot: Snapshot::default(),
             selected: "openrouter".into(),
             model: String::new(),
@@ -255,12 +336,7 @@ impl ProviderSetup {
             model_dropdown,
             mode_dropdown,
             policy_dropdown,
-            key: editor(
-                "Paste a new API key — saved keys stay hidden",
-                true,
-                false,
-                ctx,
-            ),
+            key: editor("Enter API key", true, false, ctx),
             endpoint: editor(
                 "Provider default, or https://your-endpoint/v1",
                 false,
@@ -272,7 +348,11 @@ impl ProviderSetup {
             instructions,
             mcp_name: editor("Server name, e.g. filesystem", false, false, ctx),
             mcp_command: editor("https://your-server/mcp", false, false, ctx),
-            quick: Default::default(),
+            provider_rows: Default::default(),
+            model_rows: Default::default(),
+            model_scroll: Default::default(),
+            connection_check: None,
+            cancel_test: Default::default(),
             buttons: Default::default(),
             oauth_buttons: Vec::new(),
             mcp_buttons: Vec::new(),
@@ -289,6 +369,15 @@ impl ProviderSetup {
         ctx: &mut ViewContext<WarpAgentPageView>,
     ) {
         self.snapshot = snapshot;
+        for provider in &self.snapshot.providers {
+            self.provider_rows.entry(provider.id.clone()).or_default();
+            for model in provider.models.keys() {
+                self.model_rows.entry(model.clone()).or_default();
+            }
+        }
+        self.provider_rows
+            .entry("custom-mywarp".into())
+            .or_default();
         let mut items: Vec<_> = self
             .snapshot
             .providers
@@ -298,7 +387,13 @@ impl ProviderSetup {
                     format!(
                         "{}{}",
                         p.name,
-                        if p.connected { "  • Configured" } else { "" }
+                        if p.has_api_key {
+                            "  · Key available"
+                        } else if p.connected {
+                            "  · Available"
+                        } else {
+                            ""
+                        }
                     ),
                     action(ProviderSetupAction::SelectProvider(p.id.clone())),
                 )
@@ -310,10 +405,7 @@ impl ProviderSetup {
         ));
         self.provider_dropdown.update(ctx, |dropdown, ctx| {
             dropdown.set_items(items, ctx);
-            dropdown.set_selected_by_action(
-                action(ProviderSetupAction::SelectProvider(self.selected.clone())),
-                ctx,
-            );
+            dropdown.reset_selection(ctx);
         });
         self.mode_dropdown.update(ctx, |dropdown, ctx| {
             let items = self
@@ -357,13 +449,6 @@ impl ProviderSetup {
             .providers
             .iter()
             .find(|p| p.id == self.selected);
-        let endpoint = provider.map(|p| p.endpoint.clone()).unwrap_or_default();
-        if populate_form {
-            self.endpoint
-                .update(ctx, |editor, ctx| editor.set_buffer_text(&endpoint, ctx));
-            self.key
-                .update(ctx, |editor, ctx| editor.set_buffer_text("", ctx));
-        }
         self.oauth_buttons = provider
             .map(|p| {
                 p.oauth
@@ -410,15 +495,62 @@ impl ProviderSetup {
                 ctx,
             );
         });
-        if populate_form {
-            let model = if self.selected.starts_with("custom-") {
-                self.model.as_str()
-            } else {
-                ""
-            };
-            self.custom_model
-                .update(ctx, |editor, ctx| editor.set_buffer_text(model, ctx));
+        if !self.model.is_empty() {
+            self.model_scroll.scroll_to_position(ScrollTarget {
+                position_id: format!("mywarp-model-{}", self.model),
+                mode: ScrollToPositionMode::FullyIntoView,
+            });
         }
+        if populate_form {
+            self.populate_connection_form(false, ctx);
+        }
+    }
+
+    fn populate_connection_form(
+        &mut self,
+        preserve_edits: bool,
+        ctx: &mut ViewContext<WarpAgentPageView>,
+    ) {
+        let provider = self
+            .snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.id == self.selected);
+        let endpoint = provider
+            .map(|provider| provider.endpoint.clone())
+            .unwrap_or_default();
+        refresh_editor(
+            &self.endpoint,
+            &mut self.loaded_endpoint,
+            endpoint,
+            preserve_edits,
+            ctx,
+        );
+        let model = if self.selected.starts_with("custom-") {
+            self.model.clone()
+        } else {
+            String::new()
+        };
+        refresh_editor(
+            &self.custom_model,
+            &mut self.loaded_custom_model,
+            model,
+            preserve_edits,
+            ctx,
+        );
+        self.key.update(ctx, |editor, ctx| {
+            if !preserve_edits {
+                editor.set_buffer_text("", ctx);
+            }
+            editor.set_placeholder_text(
+                if provider.is_some_and(|provider| provider.has_api_key) {
+                    "********"
+                } else {
+                    "Enter API key"
+                },
+                ctx,
+            );
+        });
     }
 
     fn set_busy(&mut self, busy: bool, ctx: &mut ViewContext<WarpAgentPageView>) {
@@ -517,7 +649,12 @@ impl ProviderSetup {
         appearance: &Appearance,
     ) -> Box<dyn Element> {
         let disabled = self.busy
-            || (self.model.is_empty()
+            || ((self.model.is_empty()
+                || !self
+                    .snapshot
+                    .providers
+                    .iter()
+                    .any(|p| p.id == self.selected && p.connected))
                 && matches!(
                     command,
                     ProviderSetupAction::Test | ProviderSetupAction::DefaultModel
@@ -538,15 +675,6 @@ impl ProviderSetup {
         )
     }
 
-    fn card(content: Box<dyn Element>, appearance: &Appearance) -> Box<dyn Element> {
-        Container::new(content)
-            .with_uniform_padding(24.)
-            .with_background(appearance.theme().surface_1())
-            .with_border(Border::all(1.).with_border_fill(appearance.theme().surface_2()))
-            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.)))
-            .finish()
-    }
-
     fn feedback_for(&self, scope: FeedbackScope, appearance: &Appearance) -> Box<dyn Element> {
         if self.feedback_scope == scope {
             self.feedback(appearance)
@@ -565,7 +693,13 @@ impl ProviderSetup {
             Text::new(self.status.clone(), appearance.ui_font_family(), 13.)
                 .with_color(color)
                 .finish(),
-            if !self.error && self.status.starts_with("Connection verified") {
+            if self.connection_check.is_some() {
+                "mywarp-connection-testing"
+            } else if self.status == "Connection test cancelled." {
+                "mywarp-connection-cancelled"
+            } else if self.error && self.feedback_scope == FeedbackScope::Models {
+                "mywarp-connection-error"
+            } else if !self.error && self.status.starts_with("Connection verified") {
                 "mywarp-connection-verified"
             } else {
                 "mywarp-provider-feedback"
@@ -574,44 +708,13 @@ impl ProviderSetup {
         .finish()
     }
 
-    fn providers(&self, appearance: &Appearance) -> Box<dyn Element> {
-        let mut quick = Flex::row();
-        for (i, (id, label)) in [
-            ("openai", "OpenAI / Codex"),
-            ("anthropic", "Anthropic / Claude"),
-            ("openrouter", "OpenRouter"),
-            ("zai", "Z.ai"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            quick.add_child(
-                Expanded::new(
-                    1.,
-                    Container::new(button(
-                        label,
-                        self.quick[i].clone(),
-                        ProviderSetupAction::SelectProvider(id.into()),
-                        self.selected == id,
-                        self.busy || self.authorization.is_some(),
-                        appearance,
-                    ))
-                    .with_margin_right(if i < 3 { 8. } else { 0. })
-                    .finish(),
-                )
-                .finish(),
-            );
-        }
+    fn connection_form(&self, appearance: &Appearance) -> Box<dyn Element> {
         let provider = self
             .snapshot
             .providers
             .iter()
             .find(|p| p.id == self.selected);
-        let mut column = Flex::column()
-            .with_child(Self::text("Connect your AI",20.,false,appearance))
-            .with_child(Container::new(Self::text("Choose a provider. Your connections and preferences are saved in this MyWarp profile.",13.,true,appearance)).with_margin_top(6.).with_margin_bottom(20.).finish())
-            .with_child(quick.finish())
-            .with_child(Container::new(SavePosition::new(ChildView::new(&self.provider_dropdown).finish(),"mywarp-provider-picker").finish()).with_margin_top(14.).with_margin_bottom(20.).finish());
+        let mut column = Flex::column();
         let name = provider
             .map(|p| p.name.as_str())
             .unwrap_or("Custom endpoint");
@@ -621,10 +724,18 @@ impl ProviderSetup {
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_child(Expanded::new(1., Self::text(name, 17., false, appearance)).finish())
                 .with_child(Self::text(
-                    if connected {
-                        "● Configured"
+                    if self
+                        .snapshot
+                        .verified
+                        .contains(&(self.selected.clone(), self.model.clone()))
+                    {
+                        "● Verified"
+                    } else if provider.is_some_and(|provider| provider.has_api_key) {
+                        "Key available · Not tested"
+                    } else if connected {
+                        "Available · Not tested"
                     } else {
-                        "○ Not connected"
+                        "No credentials"
                     },
                     12.,
                     !connected,
@@ -645,13 +756,55 @@ impl ProviderSetup {
             .with_margin_bottom(20.)
             .finish(),
         );
-        column.add_child(Self::field("API key", &self.key, 18., appearance));
-        column.add_child(Self::field(
-            "Base URL  ·  optional for built-in providers",
-            &self.endpoint,
-            18.,
-            appearance,
-        ));
+        column.add_child(Self::field("Base URL", &self.endpoint, 18., appearance));
+        column.add_child(
+            Container::new(Self::text(
+                match self.selected.as_str() {
+                    "zai-coding-plan" | "zai" => "API format: OpenAI Chat Completions",
+                    "anthropic" => "API format: Anthropic Messages",
+                    _ => "API format: Provider default",
+                },
+                12.,
+                true,
+                appearance,
+            ))
+            .with_margin_bottom(16.)
+            .finish(),
+        );
+        column.add_child(
+            SavePosition::new(
+                Self::field("API key", &self.key, 18., appearance),
+                if provider.is_some_and(|provider| provider.has_api_key) {
+                    "mywarp-provider-key-saved"
+                } else {
+                    "mywarp-provider-key-empty"
+                },
+            )
+            .finish(),
+        );
+        if provider.is_some_and(|provider| provider.has_api_key) {
+            column.add_child(
+                Container::new(button(
+                    "Open key file",
+                    self.buttons[14].clone(),
+                    ProviderSetupAction::OpenApiKeyFile,
+                    false,
+                    false,
+                    appearance,
+                ))
+                .with_margin_bottom(14.)
+                .finish(),
+            );
+        }
+        if matches!(self.selected.as_str(), "zai" | "zai-coding-plan") {
+            column.add_child(Container::new(Self::text(
+                if self.selected == "zai-coding-plan" {
+                    "Uses your GLM Coding Plan quota. Enter a key from Personal Coding Plan > Plan Overview."
+                } else {
+                    "Uses prepaid API balance. For a coding subscription, choose Z.AI Coding Plan in the provider list."
+                }, 12., true, appearance,
+            )).with_margin_bottom(16.).finish());
+        }
         if self.selected.starts_with("custom-") {
             column.add_child(Self::field(
                 "Custom model ID",
@@ -660,25 +813,13 @@ impl ProviderSetup {
                 appearance,
             ));
         }
-        let mut buttons = Flex::row()
-            .with_child(self.button(
-                "Save connection",
-                0,
-                ProviderSetupAction::Save,
-                true,
-                appearance,
-            ))
-            .with_child(
-                Container::new(self.button(
-                    "Refresh",
-                    1,
-                    ProviderSetupAction::Refresh,
-                    false,
-                    appearance,
-                ))
-                .with_margin_left(10.)
-                .finish(),
-            );
+        let mut buttons = Flex::row().with_child(self.button(
+            "Save connection",
+            0,
+            ProviderSetupAction::Save,
+            true,
+            appearance,
+        ));
         if connected {
             buttons.add_child(
                 Container::new(self.button(
@@ -754,37 +895,293 @@ impl ProviderSetup {
                 .with_margin_top(18.)
                 .finish(),
         );
+        column.add_child(
+            Container::new(self.models(appearance))
+                .with_margin_top(24.)
+                .finish(),
+        );
+        column.finish()
+    }
+
+    fn providers(&self, appearance: &Appearance) -> Box<dyn Element> {
+        let mut rail = Flex::column().with_child(
+            Container::new(Self::text("Providers", 12., true, appearance))
+                .with_margin_bottom(14.)
+                .finish(),
+        );
+        let recommended = [
+            "zai-coding-plan",
+            "zai",
+            "openai",
+            "anthropic",
+            "openrouter",
+        ];
+        for id in recommended.into_iter().chain(
+            self.snapshot
+                .providers
+                .iter()
+                .filter(|p| {
+                    (p.connected || p.id == self.selected) && !recommended.contains(&p.id.as_str())
+                })
+                .map(|p| p.id.as_str()),
+        ) {
+            let Some(mouse) = self.provider_rows.get(id) else {
+                continue;
+            };
+            let provider = self.snapshot.providers.iter().find(|p| p.id == id);
+            let label = match id {
+                "zai-coding-plan" => "Z.AI Coding Plan",
+                "zai" => "Z.AI Standard API",
+                "openai" => "OpenAI / Codex",
+                "anthropic" => "Anthropic / Claude",
+                "openrouter" => "OpenRouter",
+                _ => provider.map(|p| p.name.as_str()).unwrap_or(id),
+            };
+            let marker = provider_marker(&self.snapshot, id);
+            rail.add_child(Self::selection_row(
+                label,
+                SavePosition::new(
+                    match marker {
+                        ProviderMarker::Default => Text::new("●", appearance.ui_font_family(), 12.)
+                            .with_color(appearance.theme().ui_green_color())
+                            .finish(),
+                        ProviderMarker::Verified => {
+                            Text::new("●", appearance.ui_font_family(), 12.)
+                                .with_color(appearance.theme().ui_yellow_color())
+                                .finish()
+                        }
+                        ProviderMarker::Untested => Self::text("○", 12., true, appearance),
+                    },
+                    &format!("mywarp-provider-marker-{id}-{marker:?}"),
+                )
+                .finish(),
+                mouse.clone(),
+                ProviderSetupAction::SelectProvider(id.into()),
+                self.selected == id,
+                &format!("mywarp-provider-action-{label}"),
+                appearance,
+            ));
+        }
+        if self.selected == "custom-mywarp"
+            && !self
+                .snapshot
+                .providers
+                .iter()
+                .any(|p| p.id == self.selected)
+            && let Some(mouse) = self.provider_rows.get("custom-mywarp")
+        {
+            rail.add_child(Self::selection_row(
+                "Custom endpoint",
+                Self::text("○", 12., true, appearance),
+                mouse.clone(),
+                ProviderSetupAction::SelectProvider("custom-mywarp".into()),
+                true,
+                "mywarp-provider-action-Custom endpoint",
+                appearance,
+            ));
+        }
+        let panel = Flex::row()
+            .with_child(
+                ConstrainedBox::new(
+                    Container::new(rail.finish())
+                        .with_uniform_padding(16.)
+                        .finish(),
+                )
+                .with_width(210.)
+                .finish(),
+            )
+            .with_child(
+                Expanded::new(
+                    1.,
+                    Container::new(self.connection_form(appearance))
+                        .with_uniform_padding(24.)
+                        .with_border(
+                            Border::left(1.).with_border_fill(appearance.theme().surface_2()),
+                        )
+                        .finish(),
+                )
+                .finish(),
+            );
+        Flex::column()
+            .with_child(Self::text(
+                "Manage your AI providers. Choose a connection to configure and test its models.",
+                13.,
+                true,
+                appearance,
+            ))
+            .with_child(
+                Container::new(
+                    Flex::row()
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_main_axis_alignment(MainAxisAlignment::End)
+                        .with_child(
+                            Container::new(button(
+                                "Open provider config",
+                                self.buttons[13].clone(),
+                                ProviderSetupAction::OpenConfiguration,
+                                false,
+                                false,
+                                appearance,
+                            ))
+                            .with_margin_right(10.)
+                            .finish(),
+                        )
+                        .with_child(self.button(
+                            "Refresh",
+                            1,
+                            ProviderSetupAction::Refresh,
+                            false,
+                            appearance,
+                        ))
+                        .with_child(
+                            Container::new(
+                                SavePosition::new(
+                                    ChildView::new(&self.provider_dropdown).finish(),
+                                    "mywarp-provider-picker",
+                                )
+                                .finish(),
+                            )
+                            .with_margin_left(10.)
+                            .finish(),
+                        )
+                        .finish(),
+                )
+                .with_margin_top(12.)
+                .finish(),
+            )
+            .with_child(
+                Container::new(
+                    SavePosition::new(
+                        Container::new(panel.finish())
+                            .with_border(
+                                Border::all(1.).with_border_fill(appearance.theme().surface_2()),
+                            )
+                            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(10.)))
+                            .finish(),
+                        if !self.busy && self.server.is_some() {
+                            "mywarp-providers-ready"
+                        } else {
+                            "mywarp-providers-loading"
+                        },
+                    )
+                    .finish(),
+                )
+                .with_margin_top(18.)
+                .finish(),
+            )
+            .finish()
+    }
+
+    fn selection_row(
+        label: &str,
+        trailing: Box<dyn Element>,
+        mouse: MouseStateHandle,
+        command: ProviderSetupAction,
+        selected: bool,
+        position: &str,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
         SavePosition::new(
-            Self::card(column.finish(), appearance),
-            if !self.busy && self.server.is_some() {
-                "mywarp-providers-ready"
-            } else {
-                "mywarp-providers-loading"
-            },
+            Hoverable::new(mouse, |state| {
+                let body = Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(
+                        Expanded::new(1., Self::text(label, 13., false, appearance)).finish(),
+                    )
+                    .with_child(trailing);
+                let mut row = Container::new(body.finish());
+                if selected || state.is_hovered() {
+                    row = row.with_background(appearance.theme().surface_2());
+                }
+                row.with_horizontal_padding(12.)
+                    .with_vertical_padding(12.)
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)))
+                    .with_margin_bottom(6.)
+                    .finish()
+            })
+            .with_cursor(Cursor::PointingHand)
+            .on_click(move |ctx, _, _| ctx.dispatch_typed_action(action(command.clone())))
+            .finish(),
+            position,
         )
         .finish()
     }
 
     fn models(&self, appearance: &Appearance) -> Box<dyn Element> {
-        let mut column = Flex::column()
-            .with_child(Self::text("Model", 16., false, appearance))
-            .with_child(
-                Container::new(Self::text(
-                    "Select a model from this provider, then verify that it can answer.",
-                    13.,
-                    true,
-                    appearance,
-                ))
-                .with_margin_top(6.)
-                .with_margin_bottom(14.)
+        let mut column =
+            Flex::column().with_child(Self::text("Model list", 15., false, appearance));
+        let mut rows = Flex::column();
+        let provider = self
+            .snapshot
+            .providers
+            .iter()
+            .find(|p| p.id == self.selected);
+        if let Some(provider) = provider {
+            if provider.models.len() > 8 {
+                column.add_child(
+                    Container::new(ChildView::new(&self.model_dropdown).finish())
+                        .with_margin_top(12.)
+                        .with_margin_bottom(8.)
+                        .finish(),
+                );
+            }
+            for (id, label) in &provider.models {
+                if provider.models.len() > 8 && *id != self.model {
+                    continue;
+                }
+                if let Some(mouse) = self.model_rows.get(id) {
+                    rows.add_child(Self::selection_row(
+                        &format!("{label}  ·  {id}"),
+                        Self::text(
+                            if *id == self.model { "Selected" } else { "" },
+                            12.,
+                            true,
+                            appearance,
+                        ),
+                        mouse.clone(),
+                        ProviderSetupAction::SelectModel(id.clone()),
+                        *id == self.model,
+                        &format!("mywarp-model-{id}"),
+                        appearance,
+                    ));
+                }
+            }
+            if provider.models.is_empty() {
+                column.add_child(Self::text("No models are available. Save this connection or refresh the provider directory.", 12., true, appearance));
+            }
+        }
+        column.add_child(
+            Container::new(
+                ConstrainedBox::new(
+                    NewScrollable::vertical(
+                        SingleAxisConfig::Clipped {
+                            handle: self.model_scroll.clone(),
+                            child: rows.finish(),
+                        },
+                        appearance.theme().nonactive_ui_detail().into(),
+                        appearance.theme().active_ui_detail().into(),
+                        warpui::elements::Fill::None,
+                    )
+                    .finish(),
+                )
+                .with_max_height(150.)
                 .finish(),
             )
-            .with_child(ChildView::new(&self.model_dropdown).finish());
+            .with_border(Border::all(1.).with_border_fill(appearance.theme().surface_2()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)))
+            .with_uniform_padding(4.)
+            .with_margin_top(10.)
+            .finish(),
+        );
         column.add_child(
             Container::new(
                 Flex::row()
                     .with_child(self.button(
-                        "Test connection",
+                        if self.connection_check.is_some() {
+                            "Testing…"
+                        } else {
+                            "Test connection"
+                        },
                         3,
                         ProviderSetupAction::Test,
                         false,
@@ -792,7 +1189,7 @@ impl ProviderSetup {
                     ))
                     .with_child(
                         Container::new(self.button(
-                            "Use for new chats",
+                            "Set as default",
                             4,
                             ProviderSetupAction::DefaultModel,
                             true,
@@ -806,6 +1203,20 @@ impl ProviderSetup {
             .with_margin_top(14.)
             .finish(),
         );
+        if self.connection_check.is_some() {
+            column.add_child(
+                Container::new(button(
+                    "Cancel test",
+                    self.cancel_test.clone(),
+                    ProviderSetupAction::CancelTest,
+                    false,
+                    false,
+                    appearance,
+                ))
+                .with_margin_top(10.)
+                .finish(),
+            );
+        }
         column.add_child(
             Container::new(self.feedback_for(FeedbackScope::Models, appearance))
                 .with_margin_top(12.)
@@ -828,8 +1239,21 @@ impl ProviderSetup {
             .with_margin_top(12.)
             .finish(),
         );
-        Self::card(column.finish(), appearance)
+        column.finish()
     }
+}
+
+fn refresh_editor(
+    editor: &ViewHandle<EditorView>,
+    loaded: &mut String,
+    value: String,
+    preserve_edits: bool,
+    ctx: &mut ViewContext<WarpAgentPageView>,
+) {
+    if !preserve_edits || editor.as_ref(ctx).buffer_text(ctx) == *loaded {
+        editor.update(ctx, |editor, ctx| editor.set_buffer_text(&value, ctx));
+    }
+    *loaded = value;
 }
 
 fn button(
@@ -876,10 +1300,128 @@ fn button(
 
 impl WarpAgentPageView {
     #[cfg(feature = "provider-settings-check")]
+    pub(in crate::settings_view) fn save_provider_with_configuration_reload(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.handle_provider_setup_action(&ProviderSetupAction::Save, ctx);
+        crate::configuration_watcher::ConfigurationWatcher::handle(ctx).update(ctx, |_, ctx| {
+            ctx.emit(crate::configuration_watcher::ConfigurationEvent::Changed);
+        });
+    }
+
+    #[cfg(feature = "provider-settings-check")]
     pub(in crate::settings_view) fn provider_setup_ready(&self) -> bool {
         self.provider_setup
             .as_ref()
             .is_some_and(|state| state.server.is_some() && !state.busy && !state.error)
+    }
+
+    #[cfg(feature = "provider-settings-check")]
+    pub(in crate::settings_view) fn provider_key_is_masked(&self, ctx: &AppContext) -> bool {
+        self.provider_setup.as_ref().is_some_and(|state| {
+            let editor = state.key.as_ref(ctx);
+            state
+                .snapshot
+                .providers
+                .iter()
+                .any(|provider| provider.id == state.selected && provider.has_api_key)
+                && editor.buffer_text(ctx).is_empty()
+                && editor.placeholder_text("") == Some("********")
+        })
+    }
+
+    #[cfg(feature = "provider-settings-check")]
+    pub(crate) fn provider_configuration_matches(
+        &self,
+        model: &str,
+        draft: &str,
+        invalid: bool,
+        ctx: &AppContext,
+    ) -> bool {
+        self.provider_setup.as_ref().is_some_and(|state| {
+            !state.busy
+                && !state.reload_pending
+                && state.key.as_ref(ctx).buffer_text(ctx) == draft
+                && if invalid {
+                    state.error && state.status.starts_with("Configuration was not reloaded:")
+                } else {
+                    !state.error
+                        && state.snapshot.providers.iter().any(|provider| {
+                            provider.id == "custom-mywarp" && provider.models.contains_key(model)
+                        })
+                }
+        })
+    }
+
+    fn refresh_provider_configuration(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(state) = self.provider_setup.as_mut() else {
+            return;
+        };
+        if !state.reload_pending || state.busy || state.authorization.is_some() {
+            return;
+        }
+        state.reload_pending = false;
+        let generation = state.configuration_generation;
+        state.set_busy(true, ctx);
+        state.feedback_scope = FeedbackScope::Connection;
+        state.status = "Reloading changed provider configuration…".into();
+        ctx.spawn(offload(|| {
+            let profile = warp_core::provider_setup::profile_dir()?;
+            let server = ProviderServer::start(profile.clone(),warp_core::provider_setup::runtime_executable())?;
+            let snapshot = server.snapshot()?;
+            let instructions = std::fs::read_to_string(warp_core::windows_package::configuration_dir(&profile).join("agent-instructions.md")).unwrap_or_default();
+            Ok((server,snapshot,instructions))
+        }), move |me,result,ctx| {
+            let Some(state) = me.provider_setup.as_mut() else { return; };
+            state.set_busy(false,ctx);
+            if state.configuration_generation == generation {
+                match result {
+                    Ok((server,snapshot,instructions)) => {
+                        state.server = Some(server);
+                        state.update(snapshot,false,ctx);
+                        state.populate_connection_form(true,ctx);
+                        refresh_editor(&state.instructions,&mut state.loaded_instructions,instructions,true,ctx);
+                        if state.snapshot.verified.contains(&(state.selected.clone(),state.model.clone())) {
+                            state.status = "Connection verified — the selected model responded successfully.".into();
+                            state.feedback_scope = FeedbackScope::Models;
+                        } else { state.status = "Configuration reloaded from disk.".into(); }
+                        state.error = false;
+                    }
+                    Err(error) => { state.status = format!("Configuration was not reloaded: {error}"); state.error = true; }
+                }
+            }
+            ctx.notify();
+            me.refresh_provider_configuration(ctx);
+        });
+        ctx.notify();
+    }
+
+    fn update_connection_check_progress(attempt: Arc<AtomicBool>, ctx: &mut ViewContext<Self>) {
+        ctx.spawn(
+            Timer::after(Duration::from_millis(250)),
+            move |me, _, ctx| {
+                let Some(state) = me.provider_setup.as_mut() else {
+                    return;
+                };
+                let Some((started, cancelled)) = &state.connection_check else {
+                    return;
+                };
+                if !Arc::ptr_eq(cancelled, &attempt) {
+                    return;
+                }
+                if !cancelled.load(Ordering::Relaxed) {
+                    state.status = format!(
+                        "Waiting for {}… {}s / {}s. You can cancel this test.",
+                        state.model,
+                        started.elapsed().as_secs(),
+                        CONNECTION_CHECK_TIMEOUT.as_secs(),
+                    );
+                }
+                ctx.notify();
+                Self::update_connection_check_progress(attempt, ctx);
+            },
+        );
     }
 
     fn start_provider_server(ctx: &mut ViewContext<Self>) {
@@ -900,16 +1442,20 @@ impl WarpAgentPageView {
                             state.server = Some(server);
                             if let Some((provider, _)) = snapshot.default_model.split_once('/') {
                                 state.selected = provider.to_owned();
-                            } else if let Some(provider) =
-                                ["openai", "anthropic", "openrouter", "zai"]
-                                    .into_iter()
-                                    .find(|id| {
-                                        snapshot
-                                            .providers
-                                            .iter()
-                                            .any(|p| p.id == *id && p.connected)
-                                    })
-                            {
+                            } else if let Some(provider) = [
+                                "zai-coding-plan",
+                                "openai",
+                                "anthropic",
+                                "openrouter",
+                                "zai",
+                            ]
+                            .into_iter()
+                            .find(|id| {
+                                snapshot
+                                    .providers
+                                    .iter()
+                                    .any(|p| p.id == *id && p.connected)
+                            }) {
                                 state.selected = provider.into();
                             }
                             state.status =
@@ -936,6 +1482,44 @@ impl WarpAgentPageView {
         let Some(state) = self.provider_setup.as_mut() else {
             return;
         };
+        if matches!(
+            value,
+            ProviderSetupAction::OpenConfiguration | ProviderSetupAction::OpenApiKeyFile
+        ) {
+            let id = state.selected.clone();
+            let open_key = matches!(value, ProviderSetupAction::OpenApiKeyFile);
+            ctx.spawn(
+                offload(move || {
+                    let profile = warp_core::provider_setup::profile_dir()?;
+                    warp_core::windows_package::prepare_opencode_profile(&profile)?;
+                    if open_key {
+                        warp_core::provider_setup::api_key_configuration_file(&profile, &id)
+                    } else {
+                        Ok(warp_core::provider_setup::configuration_file(&profile))
+                    }
+                }),
+                |me, result, ctx| match result {
+                    Ok(path) => ctx.emit(WarpAgentPageEvent::OpenProviderConfigFile(path)),
+                    Err(error) => {
+                        if let Some(state) = me.provider_setup.as_mut() {
+                            state.feedback_scope = FeedbackScope::Connection;
+                            state.status = error.to_string();
+                            state.error = true;
+                        }
+                        ctx.notify();
+                    }
+                },
+            );
+            return;
+        }
+        if matches!(value, ProviderSetupAction::CancelTest) {
+            if let Some((_, cancelled)) = &state.connection_check {
+                cancelled.store(true, Ordering::Relaxed);
+                state.status = "Cancelling connection test…".into();
+                ctx.notify();
+            }
+            return;
+        }
         if state.busy {
             return;
         }
@@ -1036,6 +1620,7 @@ impl WarpAgentPageView {
             }
             ProviderSetupAction::SelectProvider(id) => {
                 state.selected = id.clone();
+                state.model_scroll.scroll_to(Pixels::zero());
                 state.authorization = None;
                 state.model.clear();
                 state.status = "Choose credentials and a model for this provider.".into();
@@ -1048,7 +1633,7 @@ impl WarpAgentPageView {
                 state.status = if id.is_empty() {
                     "Choose a model before testing the connection."
                 } else {
-                    "Model selected. Test the connection or use it for new chats."
+                    "Model selected. Test the connection or choose Set as default for new chats."
                 }
                 .into();
                 state.error = false;
@@ -1082,6 +1667,7 @@ impl WarpAgentPageView {
                 | ProviderSetupAction::FinishAuthorization
                 | ProviderSetupAction::CancelAuthorization
         );
+        let saved_connection = matches!(value, ProviderSetupAction::Save);
         let command = value.clone();
         let id = state.selected.clone();
         let model = state.model.clone();
@@ -1104,6 +1690,20 @@ impl WarpAgentPageView {
         }
         let endpoint = state.endpoint.as_ref(ctx).buffer_text(ctx);
         let custom_model = state.custom_model.as_ref(ctx).buffer_text(ctx);
+        if matches!(value, ProviderSetupAction::Test)
+            && (!key.trim().is_empty()
+                || state
+                    .snapshot
+                    .providers
+                    .iter()
+                    .find(|p| p.id == id)
+                    .is_some_and(|p| p.endpoint != endpoint.trim()))
+        {
+            state.status = "Save connection before testing the changed key or URL.".into();
+            state.error = true;
+            ctx.notify();
+            return;
+        }
         let code = state.code.as_ref(ctx).buffer_text(ctx);
         let instructions = state.instructions.as_ref(ctx).buffer_text(ctx);
         let mcp_name = state.mcp_name.as_ref(ctx).buffer_text(ctx);
@@ -1114,24 +1714,38 @@ impl WarpAgentPageView {
         let profile_prompt = state.profile_prompt.as_ref(ctx).buffer_text(ctx);
         let snapshot = state.snapshot.clone();
         let authorization = state.authorization.clone();
+        let configuration_generation = state.configuration_generation;
+        let test_cancelled = Arc::new(AtomicBool::new(false));
+        if matches!(command, ProviderSetupAction::Test) {
+            state.snapshot.verified.remove(&(id.clone(), model.clone()));
+            state.connection_check = Some((Instant::now(), test_cancelled.clone()));
+        }
         state.set_busy(true, ctx);
         state.error = false;
         state.status = if matches!(command, ProviderSetupAction::Test) {
-            "Testing with a short message. No tools or project files are used."
+            "Connecting to the selected model… 0s / 30s. You can cancel this test."
         } else {
             "Updating your profile…"
         }
         .into();
+        if state.connection_check.is_some() {
+            Self::update_connection_check_progress(test_cancelled.clone(), ctx);
+        }
         ctx.spawn(offload(move || {
             let mut oauth = None;
-            let mut message = "Saved. New chats use these settings; existing chats can be reconnected from their footer.".to_owned();
+            let mut message = "Saved. Configuration changes reload automatically; active responses finish first.".to_owned();
             let snapshot = match command {
                 ProviderSetupAction::Refresh=>{server.restart()?;message="Provider directory refreshed.".into();server.snapshot()?},
                 ProviderSetupAction::CancelAuthorization=>{server.restart()?;message="Provider sign-in cancelled.".into();server.snapshot()?},
                 ProviderSetupAction::Save=>server.save_provider(&id,&key,&endpoint,&custom_model)?,
                 ProviderSetupAction::Disconnect=>{message="Provider disconnected from this profile.".into();server.disconnect(&id)?},
-                ProviderSetupAction::Test=>{server.test_connection(&id,&model)?;message="Connection verified — the selected model responded successfully.".into();server.snapshot()?},
-                ProviderSetupAction::DefaultModel=>{if model.is_empty(){bail!("Choose a model first.");}server.patch(json!({"model":format!("{id}/{model}")}))?},
+                ProviderSetupAction::Test=>{
+                    let profile = warp_core::provider_setup::profile_dir()?;
+                    let current = ProviderServer::start(profile.clone(),warp_core::provider_setup::runtime_executable())?;
+                    current.test_connection_cancellable(&id,&model,&test_cancelled)?;
+                    message="Connection verified — the selected model responded successfully.".into();current.snapshot()?
+                },
+                ProviderSetupAction::DefaultModel=>{if model.is_empty(){bail!("Choose a model first.");}let snapshot=server.patch(json!({"model":format!("{id}/{model}")}))?;message=format!("Default model set to {id}/{model}. New chats will use this model.");snapshot},
                 ProviderSetupAction::Authorize(method)=>{let result=server.authorize(&id,method)?;oauth=Some((id,method,result));message="Complete the provider's sign-in in your browser, then return here.".into();server.snapshot()?},
                 ProviderSetupAction::FinishAuthorization=>{let (provider,method,_,_)=authorization.context("Start a provider sign-in first")?;server.complete_authorization(&provider,method,&code)?},
                 ProviderSetupAction::AgentMode(mode)=>{warp_core::provider_setup::write_agent_override("default_agent",Value::String(mode.clone()))?;server.patch(json!({"default_agent":mode}))?},
@@ -1160,8 +1774,27 @@ impl WarpAgentPageView {
             Ok((snapshot,message,oauth))
         }),move |me,result,ctx| {
             let Some(state)=me.provider_setup.as_mut() else{return;}; state.busy=false;
+            let cancelled=state.connection_check.take().is_some_and(|(_,cancelled)|cancelled.load(Ordering::Relaxed));
+            if state.configuration_generation != configuration_generation && result.is_err() {
+                state.set_busy(false,ctx);
+                me.refresh_provider_configuration(ctx);
+                ctx.notify();
+                return;
+            }
             match result {
                 Ok((snapshot,message,oauth))=>{
+                    if saved_connection {
+                        // A newer snapshot does not undo the successful save of the disabled form.
+                        state.key.update(ctx, |editor, ctx| editor.set_buffer_text("", ctx));
+                        state.loaded_endpoint = state.endpoint.as_ref(ctx).buffer_text(ctx);
+                        state.loaded_custom_model = state.custom_model.as_ref(ctx).buffer_text(ctx);
+                    }
+                    if state.configuration_generation != configuration_generation {
+                        state.set_busy(false,ctx);
+                        me.refresh_provider_configuration(ctx);
+                        ctx.notify();
+                        return;
+                    }
                     state.status=message;state.error=false;
                     if let Some((id,method,result))=oauth {
                         let url=result["url"].as_str().unwrap_or_default();
@@ -1169,10 +1802,11 @@ impl WarpAgentPageView {
                         state.authorization=Some((id,method,result["instructions"].as_str().unwrap_or("Complete sign-in in your browser.").into(),result["method"]=="code"));
                     } else {state.authorization=None;}
                     state.update(snapshot,populate_form,ctx);
-                },Err(error)=>{state.error=true;state.status=error.to_string();}
+                },Err(error)=>{state.error = !cancelled;state.status=error.to_string();}
             }
             state.set_busy(false,ctx);
             ctx.notify();
+            me.refresh_provider_configuration(ctx);
         });
         ctx.notify();
     }
@@ -1182,7 +1816,7 @@ pub(super) struct ConnectionWidget;
 impl SettingsWidget for ConnectionWidget {
     type View = WarpAgentPageView;
     fn search_terms(&self) -> &str {
-        "AI providers connect connection API key OpenAI Codex Anthropic Claude OpenRouter Z.ai endpoint login sign-in"
+        "AI providers connect connection configuration config file edit API key OpenAI Codex Anthropic Claude OpenRouter Z.ai ZAI Coding Plan endpoint login sign-in model default catalog test verification"
     }
     fn render(
         &self,
@@ -1193,25 +1827,6 @@ impl SettingsWidget for ConnectionWidget {
         view.provider_setup
             .as_ref()
             .map(|state| state.providers(appearance))
-            .unwrap_or_else(|| Empty::new().finish())
-    }
-}
-
-pub(super) struct ModelsWidget;
-impl SettingsWidget for ModelsWidget {
-    type View = WarpAgentPageView;
-    fn search_terms(&self) -> &str {
-        "AI model default catalog test verification"
-    }
-    fn render(
-        &self,
-        view: &Self::View,
-        appearance: &Appearance,
-        _app: &AppContext,
-    ) -> Box<dyn Element> {
-        view.provider_setup
-            .as_ref()
-            .map(|state| state.models(appearance))
             .unwrap_or_else(|| Empty::new().finish())
     }
 }
