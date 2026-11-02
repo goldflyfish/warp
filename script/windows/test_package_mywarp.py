@@ -37,7 +37,7 @@ class PackagingTests(unittest.TestCase):
         (self.repo / 'Cargo.toml').write_text('[workspace]\n')
         for name in packaging.DLLS + ('OpenConsole.exe',):
             write_pe(self.repo / 'app/assets/windows/x64' / name)
-        for name in ('app/assets/bundled/bootstrap/pwsh.ps1', 'app/channels/oss/icon/no-padding/icon.ico', 'LICENSE-AGPL', 'LICENSE-MIT'):
+        for name in ('app/channels/oss/icon/no-padding/icon.ico', 'LICENSE-AGPL', 'LICENSE-MIT'):
             target = self.repo / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text('fixture attribution or asset')
@@ -71,6 +71,7 @@ class PackagingTests(unittest.TestCase):
         self.assertTrue((folder / 'Configurations/themes').is_dir())
         self.assertFalse((folder / 'Runtime').exists())
         self.assertFalse((folder / 'profile').exists())
+        self.assertFalse((folder / 'pwsh.ps1').exists())
         manifest = json.loads((folder / 'package-manifest.json').read_text())
         self.assertEqual(manifest['configuration'], 'Configurations')
         self.assertEqual(manifest['runtime'], 'Runtime')
@@ -127,6 +128,7 @@ class PackagingTests(unittest.TestCase):
         self.assertFalse((payload / 'mywarp-portable').exists())
         self.assertFalse((payload / 'profile').exists())
         self.assertFalse((payload / 'Configurations').exists())
+        self.assertFalse((payload / 'pwsh.ps1').exists())
         wrapper = (payload / 'tools/bin/opencode.cmd').read_text()
         self.assertIn('set "MYWARP_CONFIGURATIONS_DIR=%MYWARP_PROFILE%\\Configurations"', wrapper)
         self.assertIn('set "XDG_CONFIG_HOME=%MYWARP_PROFILE%\\Runtime\\providers\\config"', wrapper)

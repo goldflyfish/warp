@@ -209,7 +209,6 @@ def validate_assets(repo: Path, arch: str) -> None:
     assets = repo / "app/assets/windows" / arch
     for name in DLLS + ("OpenConsole.exe",):
         require_pe(assets / name, arch)
-    require_file(repo / "app/assets/bundled/bootstrap/pwsh.ps1")
     require_file(repo / "app/channels/oss/icon/no-padding/icon.ico")
 
 
@@ -250,12 +249,12 @@ def write_provider_templates(destination: Path) -> None:
 
 def stage_payload(args: argparse.Namespace, mode: str, arch: str, binary: Path, opencode: Path, destination: Path) -> None:
     destination.mkdir()
+    # Keep shell integration embedded so downloaded scripts don't need unblocking.
     copy_file(binary, destination / "MyWarp.exe")
     assets = args.repo / "app/assets/windows" / arch
     for name in DLLS:
         copy_file(require_pe(assets / name, arch), destination / name)
     copy_file(require_pe(assets / "OpenConsole.exe", arch), destination / arch / "OpenConsole.exe")
-    copy_file(args.repo / "app/assets/bundled/bootstrap/pwsh.ps1", destination / "pwsh.ps1")
     copy_file(args.repo / "app/channels/oss/icon/no-padding/icon.ico", destination / "icon.ico")
     for name in ("LICENSE-AGPL", "LICENSE-MIT"):
         copy_file(args.repo / name, destination / name)
