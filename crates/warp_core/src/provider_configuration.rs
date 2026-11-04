@@ -12,6 +12,7 @@ use jsonc_parser::{JsonValue, ParseOptions, parse_to_value};
 pub const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 pub fn revision(profile: &Path) -> Result<u64> {
+    crate::provider_credentials::protect_profile(profile)?;
     let config = crate::provider_setup::configuration_file(profile);
     let text = fs::read_to_string(&config).context("The provider configuration is unavailable")?;
     let root = parse_to_value(&text, &ParseOptions::default())

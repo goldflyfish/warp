@@ -77,7 +77,7 @@ Relative to `Configurations`:
 | `settings.toml` | Appearance, shortcuts and native execution profiles |
 | `themes/` | Custom themes and their assets |
 | `providers/opencode.jsonc` | Provider/model defaults, provider agent profiles and MCP configuration |
-| `providers/keys/` | Separate API-key files referenced by configuration |
+| `providers/keys/` | Windows DPAPI-encrypted API-key files referenced by configuration |
 | `providers/verification.json` | Successful provider/model checks, stored as connection fingerprints without credentials |
 | `agent-preferences.json` | Native agent mode and enforced tool policy |
 | `agent-instructions.md` | Personal instructions entered in Settings |
@@ -98,4 +98,8 @@ Windows provider processes inherit their parent job restrictions; they do not re
 
 The runtime's [server API](https://opencode.ai/docs/server/) and [configuration reference](https://opencode.ai/docs/config/) describe the underlying provider capabilities. Account and Warp service blocking remains enforced by MyWarp itself.
 
-Saved API keys display a fixed `********` mask. Typing replaces the key; an untouched masked field preserves the saved credential. **Open provider config** opens the profile's `opencode.jsonc` in MyWarp's built-in editor for provider options and models. **Open key file** opens a referenced key file, the configuration for an inline key, or the imported API-auth file. The configuration button remains available when the provider runtime is loading or needs repair.
+Saved API keys display a fixed `********` mask. Typing replaces the key; an untouched masked field preserves the saved credential. New keys are encrypted with Windows DPAPI for the current Windows account before any key file is written. Plaintext keys in provider configuration, referenced profile files, and imported API-auth entries are migrated before a provider runtime starts or reloads. External referenced key files are copied into encrypted profile storage; the external source is preserved. Environment-provided keys remain external.
+
+MyWarp decrypts API keys into the provider process's in-memory configuration, passed through the child process environment. No decrypted key file is created. Corrupt or inaccessible encrypted keys stop runtime startup rather than falling back to plaintext. The form does not offer an action to reveal or open a saved key. **Open provider config** opens `opencode.jsonc`, which contains references to encrypted key files. The configuration button remains available when the provider runtime is loading or needs repair.
+
+DPAPI protects saved copies under the Windows user account; its application namespace is not an application access-control boundary. Encrypted files cannot be used directly as provider API keys or by a standalone OpenCode launch. Settings and provider definitions can be transferred, but another Windows account or computer normally requires replacement keys. A process running as the same user or an administrator can still extract plaintext, including from runtime memory or its environment. Standard bearer API keys cannot be made permanently exclusive to MyWarp by desktop encryption. Strict usage restrictions require enforcement by the provider or a trusted backend that retains the provider key. Existing external files, old backups, environment values and provider-managed OAuth sign-ins are outside this API-key migration.

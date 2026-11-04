@@ -549,7 +549,16 @@ async fn run(
     let mut attended: Value = serde_json::from_str(&attended_config(inline_config.as_deref())?)?;
     #[cfg(windows)]
     if let Some(profile) = &profile {
-        let overrides = warp_core::provider_setup::runtime_overrides(profile)?;
+        let mut overrides = warp_core::provider_setup::runtime_overrides(profile)?;
+        overrides
+            .as_object_mut()
+            .context("Invalid provider configuration")?
+            .extend(
+                warp_core::provider_credentials::runtime_overrides(profile)?
+                    .as_object()
+                    .context("Invalid protected provider configuration")?
+                    .clone(),
+            );
         attended
             .as_object_mut()
             .context("Invalid runtime configuration")?

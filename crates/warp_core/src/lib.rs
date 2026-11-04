@@ -21,6 +21,8 @@ pub mod platform;
 #[cfg(windows)]
 pub mod provider_configuration;
 #[cfg(windows)]
+pub mod provider_credentials;
+#[cfg(windows)]
 pub mod provider_setup;
 pub mod safe_log;
 pub mod semantic_selection;

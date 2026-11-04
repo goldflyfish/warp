@@ -204,7 +204,7 @@ fn provider_setup_snapshot_keeps_keys_and_tokens_out_of_ui_state() {
     let state = snapshot(&providers, &config, &json!({})).unwrap();
     assert_eq!(
         state.providers[0].credential,
-        "API key in the provider configuration"
+        "API key configured; saved keys use Windows protection"
     );
     assert_eq!(state.providers[0].models["model/id"], "Model");
     assert_eq!(state.default_model, "openrouter/model/id");
@@ -362,6 +362,21 @@ fn provider_setup_real_runtime_saves_tests_rotates_and_disconnects_api_keys() {
     let config = fs::read_to_string(&config_path).unwrap();
     assert!(config.contains("keep this comment"));
     assert!(!config.contains("fixture-valid-key"));
+    let key_path = fs::read_dir(profile.path().join("Configurations/providers/keys"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(
+        !fs::read_to_string(&key_path)
+            .unwrap()
+            .contains("fixture-valid-key")
+    );
+    assert_eq!(
+        crate::provider_credentials::read_key(&key_path).unwrap(),
+        "fixture-valid-key"
+    );
     assert!(
         !profile
             .path()
@@ -383,6 +398,7 @@ fn provider_setup_real_runtime_saves_tests_rotates_and_disconnects_api_keys() {
         .unwrap();
     success.assert();
     drop(server);
+    assert_no_persisted_key(profile.path(), b"fixture-valid-key");
     let server =
         ProviderServer::start_inner(profile.path().into(), PathBuf::from(executable), false)
             .unwrap();
@@ -416,6 +432,7 @@ fn provider_setup_real_runtime_saves_tests_rotates_and_disconnects_api_keys() {
     assert!(!error.contains("do-not-expose"));
     assert!(!error.contains("fixture-invalid-key"));
     rejected.assert();
+    assert_no_persisted_key(profile.path(), b"fixture-invalid-key");
     assert!(server.snapshot().unwrap().verified.is_empty());
     let keys = fs::read_dir(profile.path().join("Configurations/providers/keys"))
         .unwrap()
@@ -437,6 +454,23 @@ fn provider_setup_real_runtime_saves_tests_rotates_and_disconnects_api_keys() {
             .count(),
         0
     );
+}
+
+#[cfg(feature = "test-util")]
+fn assert_no_persisted_key(directory: &Path, key: &[u8]) {
+    for entry in fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            assert_no_persisted_key(&path, key);
+        } else {
+            let bytes = fs::read(&path).unwrap();
+            assert!(
+                !bytes.windows(key.len()).any(|bytes| bytes == key),
+                "A provider key was persisted in {}",
+                path.display()
+            );
+        }
+    }
 }
 
 #[test]
@@ -463,46 +497,4 @@ fn provider_setup_real_openrouter_answers_through_the_native_settings_backend() 
     server
         .test_connection("openrouter", "openai/gpt-4.1-mini")
         .unwrap();
-}
-
-#[test]
-fn provider_key_config_opens_the_file_that_stores_the_key() {
-    let profile = tempfile::tempdir().unwrap();
-    crate::windows_package::prepare_opencode_profile(profile.path()).unwrap();
-    let config = super::configuration_file(profile.path());
-    let key = config.parent().unwrap().join("keys/fixture.key");
-    std::fs::create_dir_all(key.parent().unwrap()).unwrap();
-    std::fs::write(&key, "synthetic-key").unwrap();
-    std::fs::write(
-        &config,
-        r#"{"provider":{"fixture":{"options":{"apiKey":"{file:./keys/fixture.key}"}}}}"#,
-    )
-    .unwrap();
-    assert_eq!(
-        super::api_key_configuration_file(profile.path(), "fixture")
-            .unwrap()
-            .canonicalize()
-            .unwrap(),
-        key.canonicalize().unwrap()
-    );
-    std::fs::write(
-        &config,
-        r#"{"provider":{"fixture":{"options":{"apiKey":"synthetic-key"}}}}"#,
-    )
-    .unwrap();
-    assert_eq!(
-        super::api_key_configuration_file(profile.path(), "fixture").unwrap(),
-        config
-    );
-    std::fs::write(&config, "{}").unwrap();
-    let auth = profile
-        .path()
-        .join("Runtime/providers/data/opencode/auth.json");
-    std::fs::create_dir_all(auth.parent().unwrap()).unwrap();
-    std::fs::write(&auth, r#"{"fixture":{"type":"api","key":"synthetic-key"}}"#).unwrap();
-    assert_eq!(
-        super::api_key_configuration_file(profile.path(), "fixture").unwrap(),
-        auth
-    );
-    assert!(super::api_key_configuration_file(profile.path(), "../fixture").is_err());
 }

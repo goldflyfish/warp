@@ -408,7 +408,7 @@ mod windows_check {
                                     app, window,
                                 )
                                 && config.contains("ui-fixture")
-                                && config.contains("{file:./keys/mywarp-custom-mywarp-")
+                                && config.contains("{file:./keys/mywarp-")
                                 && !config.contains("ui-check-key")
                             {
                                 AssertionOutcome::Success
@@ -426,9 +426,7 @@ mod windows_check {
                             "mywarp-provider-action-Open provider config-OpenConfiguration",
                         )
                         .add_assertion(|app, window| {
-                            if warp::provider_settings_check::configuration_is_open(
-                                app, window, false,
-                            ) {
+                            if warp::provider_settings_check::configuration_is_open(app, window) {
                                 AssertionOutcome::Success
                             } else {
                                 AssertionOutcome::failure(
@@ -447,32 +445,6 @@ mod windows_check {
                         )
                     },
                 ))
-                .with_step(
-                    TestStep::new("Open the saved API key file")
-                        .with_click_on_saved_position(
-                            "mywarp-provider-action-Open key file-OpenApiKeyFile",
-                        )
-                        .add_assertion(|app, window| {
-                            if warp::provider_settings_check::configuration_is_open(
-                                app, window, true,
-                            ) {
-                                AssertionOutcome::Success
-                            } else {
-                                AssertionOutcome::failure("Saved key file was not opened".into())
-                            }
-                        }),
-                )
-                .with_step(
-                    TestStep::new("Return from the key file to settings").with_action(
-                        |app, window, _| {
-                            workspace_action(
-                                app,
-                                window,
-                                WorkspaceAction::ShowSettingsPage(SettingsSection::WarpAgent),
-                            )
-                        },
-                    ),
-                )
                 .with_step(search("model"))
                 .with_step(
                     TestStep::new("Wait for the provider form to finish reloading").add_assertion(

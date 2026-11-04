@@ -88,7 +88,7 @@ portable profile used after an earlier build. Rebuilding the same version automa
 | Settings and execution profiles | `Configurations\settings.toml` | Same path under `%LOCALAPPDATA%\MyWarp` |
 | Themes and workflows | `Configurations\themes` and `Configurations\workflows` | Same paths under `%LOCALAPPDATA%\MyWarp` |
 | Provider/model/MCP settings | `Configurations\providers\opencode.jsonc` | Same path under `%LOCALAPPDATA%\MyWarp` |
-| API-key files | `Configurations\providers\keys` | Same path under `%LOCALAPPDATA%\MyWarp` |
+| Encrypted API-key files | `Configurations\providers\keys` | Same path under `%LOCALAPPDATA%\MyWarp` |
 | Database and history | `Runtime\state` and `Runtime\providers\data` | Same paths under `%LOCALAPPDATA%\MyWarp` |
 | Caches, logs, installed tools | `Runtime` subfolders | Same paths under `%LOCALAPPDATA%\MyWarp` |
 
@@ -109,7 +109,9 @@ Both package modes isolate OpenCode configuration from the build computer's envi
 overrides. Provider API-key environment variables remain supported. The native chat still forces
 attended `permission: ask`. To connect, run the packaged `OpenCode.bat` and use `/connect`, or
 copy the OpenRouter example from `resources\provider-config` into `Configurations\providers`
-folder and save the key as `keys\openrouter.key`. Keys, logins and history are never copied into
+folder and save the key through MyWarp Settings. MyWarp encrypts saved API keys with Windows
+DPAPI and decrypts them only when launching its provider runtime; standalone OpenCode cannot
+use those encrypted files directly. Keys, logins and history are never copied into
 packages from the build computer. Existing provider configuration is preserved on startup.
 
 The installer needs no administrator rights and preserves the user profile when uninstalled.

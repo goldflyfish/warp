@@ -131,49 +131,6 @@ fn has_api_auth(auth: &Value, id: &str) -> bool {
             .is_some_and(|key| !key.trim().is_empty())
 }
 
-pub fn api_key_configuration_file(profile: &Path, id: &str) -> Result<PathBuf> {
-    validate_provider_id(id)?;
-    let config = configuration_file(profile);
-    let text =
-        fs::read_to_string(&config).context("The provider configuration could not be opened")?;
-    let root = CstRootNode::parse(&text, &ParseOptions::default())
-        .context("The provider configuration could not be read")?;
-    let key = root
-        .object_value()
-        .and_then(|value| value.object_value("provider"))
-        .and_then(|value| value.object_value(id))
-        .and_then(|value| value.object_value("options"))
-        .and_then(|value| value.get("apiKey"))
-        .and_then(|value| value.value())
-        .and_then(|value| value.as_string_lit())
-        .and_then(|value| value.decoded_value().ok());
-    if let Some(key) = key.filter(|key| !key.trim().is_empty()) {
-        if let Some(path) = key
-            .strip_prefix("{file:")
-            .and_then(|value| value.strip_suffix('}'))
-        {
-            let path = PathBuf::from(path);
-            let path = if path.is_absolute() {
-                path
-            } else {
-                config
-                    .parent()
-                    .context("The provider folder is unavailable")?
-                    .join(path)
-            };
-            if !path.is_file() {
-                bail!("The saved API key file is missing. Save a replacement key in AI providers.");
-            }
-            return Ok(path);
-        }
-        return Ok(config);
-    }
-    if has_api_auth(&read_api_auth(profile), id) {
-        return Ok(windows_package::runtime_dir(profile).join("providers/data/opencode/auth.json"));
-    }
-    Ok(config)
-}
-
 pub fn runtime_executable() -> PathBuf {
     #[cfg(windows)]
     if let Some(runtime) = crate::paths::bundled_resources_dir()
@@ -296,10 +253,12 @@ impl ProviderServer {
             .envs(windows_package::opencode_environment(profile))
             .env("OPENCODE_SERVER_USERNAME", "mywarp")
             .env("OPENCODE_SERVER_PASSWORD", password)
-            .env(
-                "OPENCODE_CONFIG_CONTENT",
-                r#"{"autoupdate":false,"share":"disabled"}"#,
-            )
+            .env("OPENCODE_CONFIG_CONTENT", {
+                let mut config = crate::provider_credentials::runtime_overrides(profile)?;
+                config["autoupdate"] = false.into();
+                config["share"] = "disabled".into();
+                serde_json::to_string(&config)?
+            })
             .current_dir(&workspace)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -502,13 +461,11 @@ impl ProviderServer {
         let previous_key = self.stored_key_reference(id)?;
         let mut created = None;
         if !key.trim().is_empty() {
-            let directory =
-                windows_package::configuration_dir(&self.profile).join("providers/keys");
-            fs::create_dir_all(&directory)?;
-            let name = format!("mywarp-{id}-{}.key", Uuid::new_v4());
-            let path = directory.join(&name);
-            fs::write(&path, key.trim())
-                .context("The API key could not be saved to this profile")?;
+            let path = crate::provider_credentials::save_key(&self.profile, key.trim())?;
+            let name = path
+                .file_name()
+                .context("The API key filename is unavailable")?
+                .to_string_lossy();
             provider["options"]["apiKey"] = format!("{{file:./keys/{name}}}").into();
             created = Some(path);
         }
@@ -963,7 +920,7 @@ fn snapshot(providers: &Value, config: &Value, methods: &Value) -> Result<Snapsh
                 .as_str()
                 .is_some_and(|key| !key.trim().is_empty())
             {
-                "API key in the provider configuration"
+                "API key configured; saved keys use Windows protection"
             } else if connected.iter().any(|v| v.as_str() == Some(id)) {
                 "Detected by the runtime; no API key saved in this profile"
             } else {

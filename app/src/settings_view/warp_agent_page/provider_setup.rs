@@ -22,7 +22,6 @@ pub enum ProviderSetupAction {
     SelectModel(String),
     Refresh,
     OpenConfiguration,
-    OpenApiKeyFile,
     Save,
     Disconnect,
     Test,
@@ -782,20 +781,12 @@ impl ProviderSetup {
             )
             .finish(),
         );
-        if provider.is_some_and(|provider| provider.has_api_key) {
-            column.add_child(
-                Container::new(button(
-                    "Open key file",
-                    self.buttons[14].clone(),
-                    ProviderSetupAction::OpenApiKeyFile,
-                    false,
-                    false,
-                    appearance,
-                ))
-                .with_margin_bottom(14.)
-                .finish(),
-            );
-        }
+        column.add_child(
+            Container::new(Self::text(
+                "Saved API keys are encrypted for your Windows account. Enter a new key to replace one.",
+                12., true, appearance,
+            )).with_margin_bottom(14.).finish(),
+        );
         if matches!(self.selected.as_str(), "zai" | "zai-coding-plan") {
             column.add_child(Container::new(Self::text(
                 if self.selected == "zai-coding-plan" {
@@ -1482,21 +1473,12 @@ impl WarpAgentPageView {
         let Some(state) = self.provider_setup.as_mut() else {
             return;
         };
-        if matches!(
-            value,
-            ProviderSetupAction::OpenConfiguration | ProviderSetupAction::OpenApiKeyFile
-        ) {
-            let id = state.selected.clone();
-            let open_key = matches!(value, ProviderSetupAction::OpenApiKeyFile);
+        if matches!(value, ProviderSetupAction::OpenConfiguration) {
             ctx.spawn(
                 offload(move || {
                     let profile = warp_core::provider_setup::profile_dir()?;
                     warp_core::windows_package::prepare_opencode_profile(&profile)?;
-                    if open_key {
-                        warp_core::provider_setup::api_key_configuration_file(&profile, &id)
-                    } else {
-                        Ok(warp_core::provider_setup::configuration_file(&profile))
-                    }
+                    Ok(warp_core::provider_setup::configuration_file(&profile))
                 }),
                 |me, result, ctx| match result {
                     Ok(path) => ctx.emit(WarpAgentPageEvent::OpenProviderConfigFile(path)),

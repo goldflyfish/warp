@@ -217,18 +217,14 @@ pub fn provider_key_is_masked(app: &App, window: WindowId) -> bool {
 }
 
 #[cfg(windows)]
-pub fn configuration_is_open(app: &App, window: WindowId, key_file: bool) -> bool {
+pub fn configuration_is_open(app: &App, window: WindowId) -> bool {
     app.views_of_type::<crate::code::view::CodeView>(window)
         .is_some_and(|views| {
             views.iter().any(|view| {
                 view.read(app, |view, ctx| {
                     view.local_path(ctx).is_some_and(|path| {
-                        if key_file {
-                            path.extension().is_some_and(|extension| extension == "key")
-                        } else {
-                            path.file_name()
-                                .is_some_and(|name| name == "opencode.jsonc")
-                        }
+                        path.file_name()
+                            .is_some_and(|name| name == "opencode.jsonc")
                     })
                 })
             })
