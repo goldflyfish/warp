@@ -43,12 +43,13 @@ use crate::terminal::shared_session::SharedSessionStatus;
 use crate::terminal::shared_session::manager::Manager;
 use crate::terminal::shared_session::render_util::shared_session_indicator_color;
 use crate::terminal::view::TerminalViewState;
-use crate::themes::theme::{AnsiColorIdentifier, Fill as ThemeFill, VerticalGradient};
+use crate::themes::theme::{AnsiColorIdentifier, Fill as ThemeFill};
 use crate::ui_components::buttons::icon_button;
 use crate::ui_components::color_dot::{TAB_COLOR_OPTIONS, render_color_dot};
 use crate::ui_components::icons::{ICON_DIMENSIONS, Icon};
 use crate::util::bindings::{keybinding_name_to_display_string, keybinding_name_to_keystroke};
-use crate::util::color::{Opacity, coloru_with_opacity};
+use crate::util::color::blend::Blend;
+use crate::util::color::{ContrastingColor, MinimumAllowedContrast, Opacity, coloru_with_opacity};
 use crate::util::truncation::truncate_from_end;
 use crate::window_settings::WindowSettings;
 use crate::workspace::sync_inputs::SyncedInputState;
@@ -258,6 +259,8 @@ pub fn uses_vertical_tabs(ctx: &AppContext) -> bool {
 
 const WARP_2_TAB_COLOR_OPACITY: Opacity = 25;
 const WARP_2_HOVERED_TAB_COLOR_OPACITY: Opacity = 50;
+const TAB_COLOR_STRIPE_HEIGHT: f32 = 4.;
+const ACTIVE_TAB_UNDERLINE_HEIGHT: f32 = 2.;
 const TAB_CLOSE_BUTTON_OPACITY: Opacity = 60;
 const TAB_CLOSE_BUTTON_WIDTH: f32 = 20.0;
 const MAX_TOOLTIP_LENGTH: usize = 80;
@@ -1102,7 +1105,8 @@ pub struct TabComponent<'a> {
 
 /// Structure that holds TabComponent styles.
 struct TabStyles {
-    background: Option<ThemeFill>,
+    tint: Option<ColorU>,
+    accent: Option<ColorU>,
     error_color: ColorU,
     sharing_color: ColorU,
     synced_input_indicator_color: ColorU,
@@ -1126,18 +1130,12 @@ impl TabStyles {
     /// implementing Default trait).
     fn default(appearance: &Appearance, tab_color: Option<AnsiColorIdentifier>) -> TabStyles {
         let theme = appearance.theme();
-        let active_tab_bar_color: Option<ThemeFill> =
-            tab_color.map(|color| color.to_ansi_color(&theme.terminal_colors().normal).into());
+        let terminal_colors = theme.terminal_colors();
         let error_color = theme.ui_error_color();
         let sharing_color = shared_session_indicator_color(appearance);
-        let background = active_tab_bar_color.map(|color| {
-            ThemeFill::VerticalGradient(VerticalGradient::new(
-                theme.background().into(),
-                color.into(),
-            ))
-        });
         TabStyles {
-            background,
+            tint: tab_color.map(|color| color.to_ansi_color(&terminal_colors.normal).into()),
+            accent: tab_color.map(|color| color.to_ansi_color(&terminal_colors.bright).into()),
             error_color,
             sharing_color,
             synced_input_indicator_color: ColorU::from_u32(TAB_INDICATOR_SYNCED_COLOR),
@@ -1466,12 +1464,19 @@ impl<'a> TabComponent<'a> {
         format!("tab_text_{}", self.tab_index)
     }
 
-    fn render_tab_content(&self) -> Box<dyn Element> {
-        let styles = if self.is_active_tab() {
+    fn render_tab_content(&self, colored_title: Option<ColorU>) -> Box<dyn Element> {
+        let is_active = self.is_active_tab();
+        let mut styles = if is_active {
             self.styles.default.merge(self.styles.active)
         } else {
             self.styles.default
         };
+        if let Some(color) = colored_title {
+            styles = styles.set_font_color(color);
+            if is_active {
+                styles = styles.set_font_weight(Weight::Semibold);
+            }
+        }
         let font_style = styles.font_properties();
         let font_color = styles.font_color.expect("Font color is set");
 
@@ -1548,19 +1553,11 @@ impl<'a> TabComponent<'a> {
             });
 
             // Create 100% opacity background for hover state
-            let hover_background = if let Some(custom_background) = self.styles.background {
-                match custom_background {
-                    ThemeFill::Solid(color) => Fill::Solid(color),
-                    ThemeFill::VerticalGradient(gradient) => {
-                        Fill::Solid(gradient.get_most_opaque())
-                    }
-                    ThemeFill::HorizontalGradient(gradient) => {
-                        Fill::Solid(gradient.get_most_opaque())
-                    }
-                }
-            } else {
-                Fill::Solid(self.appearance.theme().surface_3().into())
-            };
+            let hover_background = Fill::Solid(
+                self.styles
+                    .tint
+                    .unwrap_or_else(|| self.appearance.theme().surface_3().into()),
+            );
 
             let default_styles = UiComponentStyles {
                 background: Some(default_background),
@@ -1638,7 +1635,7 @@ impl<'a> TabComponent<'a> {
         FeatureFlag::PinnedTabs.is_enabled() && self.tab.pinned && !self.grouped_member
     }
 
-    fn render_indicator(&self) -> Option<Box<dyn Element>> {
+    fn render_indicator(&self, tab_accent: Option<ColorU>) -> Option<Box<dyn Element>> {
         let icon = match &self.indicator {
             Indicator::UnsavedChanges => Some(
                 Container::new(
@@ -1685,7 +1682,11 @@ impl<'a> TabComponent<'a> {
             Indicator::Shell(shell_indicator_type) => Some(
                 shell_indicator_type
                     .to_icon()
-                    .to_warpui_icon(internal_colors::neutral_5(self.appearance.theme()).into())
+                    .to_warpui_icon(
+                        tab_accent
+                            .unwrap_or_else(|| internal_colors::neutral_5(self.appearance.theme()))
+                            .into(),
+                    )
                     .finish(),
             ),
             Indicator::Agent {
@@ -1795,9 +1796,11 @@ impl<'a> TabComponent<'a> {
 
         let (background_color, border_fill) = if FeatureFlag::NewTabStyling.is_enabled() {
             // If there is a custom tab background, we overlay it with varying opacities.
-            let bg = if let Some(custom_background) = self.styles.background {
-                let base_opacity = if is_active || (is_in_multi_tab_selection && is_hovered) {
+            let bg = if let Some(tint) = self.styles.tint {
+                let base_opacity = if is_in_multi_tab_selection && is_hovered {
                     60
+                } else if is_active {
+                    50
                 } else if is_in_multi_tab_selection {
                     // Multi-selected (but not hovered): brighter than the resting
                     // tint. A grouped member sits on the group's color backdrop,
@@ -1806,19 +1809,13 @@ impl<'a> TabComponent<'a> {
                     if self.grouped_member { 55 } else { 30 }
                 } else if is_hovered {
                     40
-                } else {
+                } else if self.grouped_member {
                     20
+                } else {
+                    25
                 };
                 let opacity = (base_opacity as f32 * self.background_opacity as f32 / 100.) as u8;
-                match custom_background {
-                    ThemeFill::Solid(color) => coloru_with_opacity(color, opacity).into(),
-                    ThemeFill::VerticalGradient(gradient) => {
-                        coloru_with_opacity(gradient.get_most_opaque(), opacity).into()
-                    }
-                    ThemeFill::HorizontalGradient(gradient) => {
-                        coloru_with_opacity(gradient.get_most_opaque(), opacity).into()
-                    }
-                }
+                coloru_with_opacity(tint, opacity).into()
             } else if is_active {
                 internal_colors::fg_overlay_2(theme).into()
             } else if is_in_multi_tab_selection && is_hovered {
@@ -1845,19 +1842,8 @@ impl<'a> TabComponent<'a> {
                 WARP_2_TAB_COLOR_OPACITY
             };
 
-            let bg = if let Some(custom_background) = self.styles.background {
-                match custom_background {
-                    ThemeFill::Solid(color) => coloru_with_opacity(color, tab_opacity).into(),
-                    ThemeFill::VerticalGradient(gradient) => {
-                        coloru_with_opacity(gradient.get_most_opaque(), tab_opacity).into()
-                    }
-                    ThemeFill::HorizontalGradient(gradient) => {
-                        coloru_with_opacity(gradient.get_most_opaque(), tab_opacity).into()
-                    }
-                }
-            } else {
-                coloru_with_opacity(theme.surface_3().into(), tab_opacity).into()
-            };
+            let tint = self.styles.tint.unwrap_or_else(|| theme.surface_3().into());
+            let bg = coloru_with_opacity(tint, tab_opacity).into();
 
             let border = if is_active || is_hovered {
                 internal_colors::fg_overlay_2(theme)
@@ -1868,19 +1854,39 @@ impl<'a> TabComponent<'a> {
             (bg, border)
         };
 
+        let backdrop = theme.background().into_solid_bias_top_color();
+        let tab_surface = match background_color {
+            Fill::Solid(color) => backdrop.blend(&color),
+            _ => backdrop,
+        };
+        let title_color: ColorU = if is_active {
+            theme.font_color(tab_surface).into()
+        } else {
+            let color: ColorU = theme.main_text_color(tab_surface.into()).into();
+            color.on_background(tab_surface, MinimumAllowedContrast::Text)
+        };
+        let colored_title = self.styles.tint.map(|_| title_color);
+        let tab_accent = self
+            .styles
+            .accent
+            .map(|color| color.on_background(tab_surface, MinimumAllowedContrast::NonText));
+
         let build_full_content = |reserve_pin_space: bool| -> Box<dyn Element> {
             let mut flex_row = Flex::row()
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_main_axis_alignment(MainAxisAlignment::Center)
                 .with_cross_axis_alignment(warpui::elements::CrossAxisAlignment::Center);
-            if let Some(indicator) = self.render_indicator() {
+            if let Some(indicator) = self.render_indicator(tab_accent) {
                 flex_row.add_child(indicator);
             }
             flex_row.add_child(
                 Shrinkable::new(
                     1.0,
-                    SavePosition::new(self.render_tab_content(), &self.tab_text_position_id())
-                        .finish(),
+                    SavePosition::new(
+                        self.render_tab_content(colored_title),
+                        &self.tab_text_position_id(),
+                    )
+                    .finish(),
                 )
                 .finish(),
             );
@@ -1905,15 +1911,14 @@ impl<'a> TabComponent<'a> {
         };
 
         let compact_icon = {
-            match self.render_indicator() {
+            match self.render_indicator(tab_accent) {
                 Some(indicator) => indicator,
                 _ => {
                     // Fallback to terminal icon if no indicator is present
                     Icon::Terminal
                         .to_warpui_icon(
-                            self.styles
-                                .default
-                                .font_color
+                            tab_accent
+                                .or(self.styles.default.font_color)
                                 .unwrap_or(ColorU::white())
                                 .into(),
                         )
@@ -1936,26 +1941,10 @@ impl<'a> TabComponent<'a> {
         )
         .finish();
 
-        let close_button_background = if let Some(custom_background) = self.styles.background {
-            match custom_background {
-                ThemeFill::Solid(color) => {
-                    Fill::Solid(coloru_with_opacity(color, TAB_CLOSE_BUTTON_OPACITY))
-                }
-                ThemeFill::VerticalGradient(gradient) => Fill::Solid(coloru_with_opacity(
-                    gradient.get_most_opaque(),
-                    TAB_CLOSE_BUTTON_OPACITY,
-                )),
-                ThemeFill::HorizontalGradient(gradient) => Fill::Solid(coloru_with_opacity(
-                    gradient.get_most_opaque(),
-                    TAB_CLOSE_BUTTON_OPACITY,
-                )),
-            }
-        } else {
-            Fill::Solid(coloru_with_opacity(
-                theme.surface_3().into(),
-                TAB_CLOSE_BUTTON_OPACITY,
-            ))
-        };
+        let close_button_background = Fill::Solid(coloru_with_opacity(
+            self.styles.tint.unwrap_or_else(|| theme.surface_3().into()),
+            TAB_CLOSE_BUTTON_OPACITY,
+        ));
 
         // The old code always used a negative offset, which I (Harry) think is wrong for the left-side case (pushes outward).
         // We preserve that behavior in the flag-OFF path out of an abundance of caution to avoid breaking existing functionality.
@@ -2068,14 +2057,48 @@ impl<'a> TabComponent<'a> {
             .finish()
         };
 
+        let decorate_tab = |mut tab: Container| {
+            if is_active {
+                tab = tab.with_foreground_border(
+                    Border::bottom(ACTIVE_TAB_UNDERLINE_HEIGHT).with_border_color(title_color),
+                );
+            }
+            let tab = tab.finish();
+            if let Some(accent) = tab_accent {
+                let inset = if self.grouped_member { 6. } else { 2. };
+                let stripe = Container::new(
+                    ConstrainedBox::new(Rect::new().with_background_color(accent).finish())
+                        .with_height(TAB_COLOR_STRIPE_HEIGHT)
+                        .finish(),
+                )
+                .with_horizontal_margin(inset)
+                .finish();
+                Stack::new()
+                    .with_child(tab)
+                    .with_positioned_child(
+                        stripe,
+                        OffsetPositioning::offset_from_parent(
+                            vec2f(0., 1.),
+                            ParentOffsetBounds::ParentBySize,
+                            ParentAnchor::TopMiddle,
+                            ChildAnchor::TopMiddle,
+                        ),
+                    )
+                    .finish()
+            } else {
+                tab
+            }
+        };
+
         // Grouped member: inset rounded highlight, no side dividers. It still
         // gets its own drop target so a dragged pane can land at this member's
         // slot (and the member highlights while hovered).
         if self.grouped_member {
-            let highlight = Container::new(stack)
-                .with_background(background_color)
-                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
-                .finish();
+            let highlight = decorate_tab(
+                Container::new(stack)
+                    .with_background(background_color)
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0))),
+            );
             let member = Container::new(highlight)
                 .with_vertical_padding(3.)
                 .with_horizontal_padding(3.)
@@ -2109,10 +2132,11 @@ impl<'a> TabComponent<'a> {
                 .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.0)))
                 .with_border(Border::all(1.).with_border_fill(border_fill));
         }
+        let tab = decorate_tab(tab);
 
         // If the tab is being dragged, add an opaque background behind it
         if is_tab_dragging {
-            Container::new(tab.finish())
+            Container::new(tab)
                 .with_background_color(
                     self.ui_builder
                         .warp_theme()
@@ -2126,10 +2150,10 @@ impl<'a> TabComponent<'a> {
             // semantically meaningful for an element that follows the cursor,
             // and because the inner `DropTarget`'s position is unrelated to
             // any real tab in the target window.
-            tab.finish()
+            tab
         } else {
             DropTarget::new(
-                tab.finish(),
+                tab,
                 TabBarDropTargetData {
                     tab_bar_location: TabBarLocation::TabIndex(self.tab_index),
                 },
