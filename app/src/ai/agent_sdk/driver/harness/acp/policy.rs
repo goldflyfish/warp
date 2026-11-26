@@ -11,8 +11,11 @@ use std::path::PathBuf;
 use warp_util::path::EscapeChar;
 use warpui::{AppContext, EntityId, SingletonEntity};
 
-use super::mapping::{command_from_raw_input, first_diff, path_from_raw_input};
+use super::mapping::{
+    command_from_raw_input, effective_tool_kind, first_diff, path_from_raw_input,
+};
 use super::protocol::{ToolCallFields, ToolKind};
+use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::{
     BlocklistAIController, BlocklistAIPermissions, CommandExecutionPermission,
     CommandExecutionPermissionDeniedReason, FileWritePermission, FileWritePermissionDeniedReason,
@@ -36,10 +39,11 @@ impl PolicyRequest {
     /// agent chooses which fields to include, so paths are gathered from every place it may
     /// have put them.
     pub(super) fn for_tool_call(call: &ToolCallFields) -> Option<Self> {
-        match call.kind? {
+        let kind = effective_tool_kind(call)?;
+        match kind {
             ToolKind::Execute => {
                 let title = call.title.as_deref().unwrap_or_default();
-                command_from_raw_input(call.raw_input.as_ref(), call.kind, title)
+                command_from_raw_input(call.raw_input.as_ref(), Some(kind), title)
                     .map(|command| Self::Execute { command })
             }
             ToolKind::Edit | ToolKind::Delete | ToolKind::Move => {
@@ -88,6 +92,23 @@ impl PolicyRequest {
             log::warn!("No native conversation bound while checking an ACP request; allowing");
             return PolicyDecision::Allow;
         };
+        self.evaluate_for_conversation(
+            controller,
+            conversation_id,
+            terminal_view_id,
+            escape_char,
+            ctx,
+        )
+    }
+
+    pub(super) fn evaluate_for_conversation(
+        &self,
+        controller: &BlocklistAIController,
+        conversation_id: AIConversationId,
+        terminal_view_id: EntityId,
+        escape_char: EscapeChar,
+        ctx: &AppContext,
+    ) -> PolicyDecision {
         let scope = controller.team_context(ctx);
         let permissions = BlocklistAIPermissions::as_ref(ctx);
         match self {
@@ -108,8 +129,7 @@ impl PolicyRequest {
                 },
                 CommandExecutionPermission::Denied(reason) => {
                     log::info!(
-                        "ACP agent command would need approval in an attended session \
-                         (reason={reason:?}); allowing in an unattended run"
+                        "ACP command requires additional runtime approval (reason={reason:?})"
                     );
                     PolicyDecision::Allow
                 }
@@ -129,8 +149,7 @@ impl PolicyRequest {
                 }
                 FileWritePermission::Denied(reason) => {
                     log::info!(
-                        "ACP agent file write would need approval in an attended session \
-                         (reason={reason:?}); allowing in an unattended run"
+                        "ACP file write requires additional runtime approval (reason={reason:?})"
                     );
                     PolicyDecision::Allow
                 }

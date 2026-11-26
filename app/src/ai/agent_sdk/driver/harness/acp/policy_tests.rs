@@ -59,6 +59,64 @@ fn permission_requests_are_reduced_to_what_policy_cares_about() {
 }
 
 #[test]
+fn generic_command_requests_are_checked_by_the_command_policy() {
+    assert_eq!(
+        PolicyRequest::for_tool_call(&tool_call(json!({
+            "toolCallId": "generic-command",
+            "kind": "other",
+            "rawInput": {"command": "git status && git diff --stat && git log --oneline -5"}
+        }))),
+        Some(PolicyRequest::Execute {
+            command: "git status && git diff --stat && git log --oneline -5".to_owned()
+        })
+    );
+}
+
+#[test]
+fn command_requests_without_a_specific_kind_use_structured_arguments() {
+    assert_eq!(
+        PolicyRequest::for_tool_call(&tool_call(json!({
+            "toolCallId": "missing-kind",
+            "rawInput": {"cmd": "git status"}
+        }))),
+        Some(PolicyRequest::Execute {
+            command: "git status".to_owned()
+        })
+    );
+    assert_eq!(
+        PolicyRequest::for_tool_call(&tool_call(json!({
+            "toolCallId": "unknown-kind",
+            "kind": "shell",
+            "rawInput": {"commandLine": "git status"}
+        }))),
+        Some(PolicyRequest::Execute {
+            command: "git status".to_owned()
+        })
+    );
+}
+
+#[test]
+fn generic_tool_titles_do_not_become_command_requests() {
+    assert_eq!(
+        PolicyRequest::for_tool_call(&tool_call(json!({
+            "toolCallId": "generic",
+            "kind": "other",
+            "title": "git status",
+            "rawInput": {"command": ""}
+        }))),
+        None
+    );
+    assert_eq!(
+        PolicyRequest::for_tool_call(&tool_call(json!({
+            "toolCallId": "read",
+            "kind": "read",
+            "rawInput": {"command": "git status", "path": "README.md"}
+        }))),
+        None
+    );
+}
+
+#[test]
 fn denylisted_commands_and_protected_writes_are_refused_everything_else_allowed() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);

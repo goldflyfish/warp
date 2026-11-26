@@ -4939,6 +4939,31 @@ impl Workspace {
         });
     }
 
+    fn add_local_agent_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        if !cfg!(feature = "local_tty") || !ContextFlag::CreateNewSession.is_enabled() {
+            return;
+        }
+        let runtime = *AISettings::as_ref(ctx).local_agent_runtime.value();
+        self.current_workspace_state.close_all_modals();
+        self.add_new_session_tab_internal_with_default_session_mode_behavior(
+            NewSessionSource::Tab,
+            Some(ctx.window_id()),
+            None,
+            None,
+            true,
+            DefaultSessionModeBehavior::Ignore,
+            ctx,
+        );
+        self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
+            if let Some(terminal_view) = pane_group.active_session_view(ctx) {
+                terminal_view.update(ctx, |view, ctx| {
+                    view.set_pending_command_queue(vec![runtime.launch_command().to_owned()], ctx);
+                });
+            }
+        });
+        ctx.notify();
+    }
+
     /// Add a new terminal tab and enter the agent view with a new conversation.
     fn add_terminal_tab_with_new_agent_view(&mut self, ctx: &mut ViewContext<Self>) {
         let was_left_panel_open = self.active_tab_pane_group().as_ref(ctx).left_panel_open;
@@ -6957,7 +6982,7 @@ impl Workspace {
     /// Builds the unified new-session menu items
     /// tab bar chevron and the vertical tab bar `+` button.
     ///
-    /// Order: Agent → Terminal (sidecar) → Cloud Agent → [tab configs] → separator → New worktree config (sidecar) → New tab config → separator → Reopen closed session.
+    /// Order: Local agent → Agent → Terminal → Cloud Agent → tab configs and session actions.
     fn unified_new_session_menu_items(
         &self,
         ctx: &mut ViewContext<Self>,
@@ -6971,6 +6996,16 @@ impl Workspace {
         let shortcut_label = keybinding_name_to_display_string(NEW_TAB_BINDING_NAME, ctx);
         let reopen_closed_session_shortcut_label =
             keybinding_name_to_display_string("app:reopen_closed_session", ctx);
+
+        if cfg!(feature = "local_tty") && ContextFlag::CreateNewSession.is_enabled() {
+            let runtime = *ai_settings.local_agent_runtime.value();
+            menu_items.push(
+                MenuItemFields::new(format!("Local agent: {}", runtime.display_name()))
+                    .with_on_select_action(WorkspaceAction::AddLocalAgentTab)
+                    .with_icon(icons::Icon::Terminal)
+                    .into_item(),
+            );
+        }
 
         // 1. Agent (if AI enabled)
         if is_any_ai_enabled {
@@ -10003,6 +10038,24 @@ impl Workspace {
     }
 
     fn user_menu_items(&self, app: &AppContext) -> Vec<MenuItem<WorkspaceAction>> {
+        if warp_core::mywarp::enabled() {
+            return vec![
+                MenuItemFields::new("AI providers")
+                    .with_on_select_action(WorkspaceAction::ShowSettingsPage(
+                        SettingsSection::WarpAgent,
+                    ))
+                    .into_item(),
+                MenuItemFields::new("Settings")
+                    .with_on_select_action(WorkspaceAction::ShowSettings)
+                    .into_item(),
+                MenuItemFields::new("Keyboard shortcuts")
+                    .with_on_select_action(WorkspaceAction::ToggleKeybindingsPage)
+                    .into_item(),
+                MenuItemFields::new("Open local agent")
+                    .with_on_select_action(WorkspaceAction::AddLocalAgentTab)
+                    .into_item(),
+            ];
+        }
         let mut items = Vec::new();
         if !self.auth_state.is_anonymous_or_logged_out() {
             let name = self.auth_state.username_for_display().unwrap_or_default();
@@ -15492,9 +15545,10 @@ impl Workspace {
                 #[cfg(not(feature = "local_fs"))]
                 let _ = rule_paths;
             }
-            SettingsViewEvent::OpenCustomRouterFile(path) => {
+            SettingsViewEvent::OpenCustomRouterFile(path)
+            | SettingsViewEvent::OpenProviderConfigFile(path) => {
                 #[cfg(feature = "local_fs")]
-                self.open_custom_router_file(path, ctx);
+                self.open_settings_config_file(path, ctx);
                 #[cfg(not(feature = "local_fs"))]
                 let _ = path;
             }
@@ -18161,13 +18215,9 @@ impl Workspace {
         });
     }
 
-    /// Opens a custom model router's YAML config file in Warp's own editor.
-    ///
-    /// Unlike most "open file" flows, this always uses the Warp code editor
-    /// rather than honoring the user's external/system editor preference, since
-    /// the button is specifically for editing the router config inside Warp.
+    /// Opens a settings configuration file in the built-in editor.
     #[cfg(feature = "local_fs")]
-    fn open_custom_router_file(&mut self, path: &Path, ctx: &mut ViewContext<Self>) {
+    fn open_settings_config_file(&mut self, path: &Path, ctx: &mut ViewContext<Self>) {
         let settings = EditorSettings::as_ref(ctx);
         let target = resolve_file_target_to_open_in_warp(path, settings, None);
         self.open_file_with_target(
@@ -24086,7 +24136,7 @@ impl Workspace {
                 entry_focus: GlobalSearchEntryFocus::Results,
             });
         }
-        if *WarpDriveSettings::as_ref(ctx).enable_warp_drive {
+        if WarpDriveSettings::is_warp_drive_enabled(ctx) {
             views.push(ToolPanelView::WarpDrive);
         }
         views
@@ -24166,7 +24216,22 @@ impl TypedActionView for Workspace {
         use WorkspaceAction::*;
         let window_id = ctx.window_id();
 
-        if self.auth_state.is_anonymous_or_logged_out() && action.blocked_for_anonymous_user() {
+        if warp_core::mywarp::enabled()
+            && matches!(
+                action,
+                ShowUpgrade
+                    | SignupAnonymousUser
+                    | SignInAnonymousWebUser
+                    | OpenCloudAgentSetupGuide
+            )
+        {
+            return;
+        }
+
+        if !warp_core::mywarp::enabled()
+            && self.auth_state.is_anonymous_or_logged_out()
+            && action.blocked_for_anonymous_user()
+        {
             AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
                 auth_manager.attempt_login_gated_feature(
                     action.into(),
@@ -24399,6 +24464,7 @@ impl TypedActionView for Workspace {
             AddGetStartedTab => self.add_get_started_tab(ctx),
             AddAmbientAgentTab => self.add_ambient_agent_tab(ctx),
             AddAgentTab => self.add_terminal_tab_with_new_agent_view(ctx),
+            AddLocalAgentTab => self.add_local_agent_tab(ctx),
             AddDockerSandboxTab => self.add_docker_sandbox_tab(ctx),
             StartAgentOnboardingTutorial(tutorial) => {
                 self.start_agent_onboarding_tutorial(tutorial.clone(), ctx)

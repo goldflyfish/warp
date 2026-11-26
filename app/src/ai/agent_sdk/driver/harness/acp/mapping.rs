@@ -798,6 +798,18 @@ fn actions(actions: Vec<ClientAction>) -> Vec<TurnEvent> {
     }
 }
 
+pub(super) fn effective_tool_kind(call: &ToolCallFields) -> Option<ToolKind> {
+    // Some providers label shell permission requests as `other`, with the command only in rawInput.
+    // A display title alone is not enough to identify an executable command.
+    if matches!(call.kind, Some(ToolKind::Other | ToolKind::Unknown) | None)
+        && command_from_raw_input(call.raw_input.as_ref(), Some(ToolKind::Execute), "").is_some()
+    {
+        Some(ToolKind::Execute)
+    } else {
+        call.kind
+    }
+}
+
 /// Extracts the shell command an `execute` tool call runs, trying the common `rawInput` shapes
 /// before falling back to the title.
 pub(super) fn command_from_raw_input(

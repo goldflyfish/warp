@@ -5824,3 +5824,79 @@ fn test_tab_group_rename_blur_does_not_commit_unfinished_name() {
         });
     });
 }
+
+#[test]
+fn local_agent_tab_uses_saved_runtime_without_replacing_active_input() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        AISettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings.is_any_ai_enabled.set_value(false, ctx).unwrap();
+            settings
+                .default_session_mode_internal
+                .set_value(DefaultSessionMode::Agent, ctx)
+                .unwrap();
+        });
+        workspace.update(&mut app, |workspace, ctx| {
+            assert!(workspace.unified_new_session_menu_items(ctx).iter().any(|item| {
+                matches!(item, MenuItem::Item(fields) if fields.label().starts_with("Local agent:"))
+            }));
+        });
+        let original_terminal = workspace.read(&app, |workspace, ctx| {
+            workspace
+                .active_tab_pane_group()
+                .as_ref(ctx)
+                .active_session_view(ctx)
+                .unwrap()
+        });
+        original_terminal.update(&mut app, |terminal, ctx| {
+            terminal.input().update(ctx, |input, ctx| {
+                input.replace_buffer_content("unfinished command", ctx);
+            });
+        });
+        for (runtime, command) in [
+            (crate::settings::LocalAgentRuntime::OpenCode, "opencode"),
+            (crate::settings::LocalAgentRuntime::Codex, "codex"),
+            (crate::settings::LocalAgentRuntime::ClaudeCode, "claude"),
+            (
+                crate::settings::LocalAgentRuntime::ZaiCodingPlan,
+                "opencode --model zai-coding-plan/glm-5.3",
+            ),
+            (
+                crate::settings::LocalAgentRuntime::Zai,
+                "opencode --model zai/glm-5.3",
+            ),
+        ] {
+            AISettings::handle(&app).update(&mut app, |settings, ctx| {
+                settings
+                    .local_agent_runtime
+                    .set_value(runtime, ctx)
+                    .unwrap();
+            });
+            workspace.update(&mut app, |workspace, ctx| {
+                let before = workspace.tab_count();
+                workspace.handle_action(&WorkspaceAction::AddLocalAgentTab, ctx);
+                assert_eq!(workspace.tab_count(), before + 1);
+                let terminal = workspace
+                    .active_tab_pane_group()
+                    .as_ref(ctx)
+                    .active_session_view(ctx)
+                    .unwrap();
+                assert_ne!(terminal.id(), original_terminal.id());
+                terminal.read(ctx, |terminal, ctx| {
+                    terminal.input().read(ctx, |input, ctx| {
+                        assert_eq!(input.buffer_text(ctx), command);
+                        assert!(input.has_pending_command());
+                    });
+                    assert!(terminal.active_conversation_id(ctx).is_none());
+                });
+            });
+        }
+        original_terminal.read(&app, |terminal, ctx| {
+            assert_eq!(
+                terminal.input().as_ref(ctx).buffer_text(ctx),
+                "unfinished command"
+            );
+        });
+    });
+}

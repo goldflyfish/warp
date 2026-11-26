@@ -298,6 +298,7 @@ pub enum SettingsViewEvent {
     OpenMCPServerCollection,
     OpenCustomRouterEditor(Option<CustomModelRouter>),
     OpenCustomRouterFile(PathBuf),
+    OpenProviderConfigFile(PathBuf),
     OpenExecutionProfileEditor(ExecutionProfileId),
     OpenLspLogs {
         log_path: PathBuf,
@@ -326,6 +327,7 @@ pub enum SettingsSection {
     Warpify,
     // ── Agents umbrella subpages ──
     WarpAgent,
+    WarpAgentBehavior,
     AgentProfiles,
     AgentMCPServers,
     Knowledge,
@@ -342,6 +344,24 @@ use std::fmt::{self, Display};
 
 use crate::util::bindings::custom_tag_to_keystroke;
 
+impl SettingsSection {
+    pub(crate) fn available_in_mywarp(self) -> bool {
+        matches!(
+            self,
+            Self::WarpAgent
+                | Self::WarpAgentBehavior
+                | Self::AgentProfiles
+                | Self::ThirdPartyCLIAgents
+                | Self::Appearance
+                | Self::Features
+                | Self::Keybindings
+                | Self::Scripting
+                | Self::EditorAndCodeReview
+                | Self::About
+        )
+    }
+}
+
 impl Display for SettingsSection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -350,7 +370,16 @@ impl Display for SettingsSection {
             SettingsSection::SharedBlocks => write!(f, "Shared blocks"),
             SettingsSection::Scripting => write!(f, "Scripting"),
             SettingsSection::WarpDrive => write!(f, "Warp Drive"),
-            SettingsSection::WarpAgent => write!(f, "Warp Agent"),
+            SettingsSection::WarpAgent => write!(
+                f,
+                "{}",
+                if warp_core::mywarp::enabled() {
+                    "AI providers"
+                } else {
+                    "Warp Agent"
+                }
+            ),
+            SettingsSection::WarpAgentBehavior => write!(f, "Warp Agent behavior"),
             SettingsSection::AgentProfiles => write!(f, "Profiles"),
             SettingsSection::AgentMCPServers => write!(f, "MCP servers"),
             SettingsSection::Knowledge => write!(f, "Knowledge"),
@@ -394,6 +423,7 @@ impl SettingsSection {
             Self::WarpDrive => "Warp Drive",
             Self::Warpify => "Warpify",
             Self::WarpAgent => "Warp Agent",
+            Self::WarpAgentBehavior => "Warp Agent behavior",
             Self::AgentProfiles => "Profiles",
             Self::AgentMCPServers => "MCP servers",
             Self::Knowledge => "Knowledge",
@@ -431,6 +461,7 @@ impl SettingsSection {
             "Warpify" => Self::Warpify,
             // "Oz" and "AI" are older names for what is now the Warp Agent page.
             "Warp Agent" | "Oz" | "AI" => Self::WarpAgent,
+            "Warp Agent behavior" => Self::WarpAgentBehavior,
             "Profiles" | "AgentProfiles" => Self::AgentProfiles,
             // "MCP Servers" named the standalone page before it moved under the
             // Agents umbrella; it differs from the current slug only by casing.
@@ -1246,6 +1277,16 @@ impl SettingsView {
             me.handle_warp_agent_page_event(event, ctx);
         });
 
+        // The behavior page reuses the original controls in a separate view so
+        // filtering either page cannot change the other page's visible widgets.
+        let behavior_page_handle = warp_core::mywarp::enabled().then(|| {
+            let handle = ctx.add_typed_action_view(WarpAgentPageView::new_behavior);
+            ctx.subscribe_to_view(&handle, |me, _, event, ctx| {
+                me.handle_warp_agent_page_event(event, ctx);
+            });
+            handle
+        });
+
         // Agent profiles page, under the Agents umbrella
         let agent_profiles_page_handle = ctx.add_typed_action_view(AgentProfilesPageView::new);
         ctx.subscribe_to_view(&agent_profiles_page_handle, |me, _, event, ctx| {
@@ -1392,6 +1433,13 @@ impl SettingsView {
             SettingsPage::new(warp_drive_page_handle),
         ];
 
+        if let Some(handle) = behavior_page_handle {
+            let mut page = SettingsPage::new(handle);
+            // Both pages use WarpAgentPageView, with independently owned content.
+            page.section = SettingsSection::WarpAgentBehavior;
+            settings_pages.push(page);
+        }
+
         if let Some(scripting_page_handle) = scripting_page_handle {
             settings_pages.push(SettingsPage::new(scripting_page_handle));
         }
@@ -1403,20 +1451,22 @@ impl SettingsView {
             SettingsPage::new(about_page_handle),
         ]);
 
+        let mut agent_subpages = vec![SettingsSection::WarpAgent];
+        if warp_core::mywarp::enabled() {
+            agent_subpages.push(SettingsSection::WarpAgentBehavior);
+        }
+        agent_subpages.extend([
+            SettingsSection::AgentProfiles,
+            SettingsSection::AgentMCPServers,
+            SettingsSection::Knowledge,
+            SettingsSection::ThirdPartyCLIAgents,
+        ]);
+
         // Build sidebar nav items. Umbrellas group their subpages here and
         // nowhere else, so this list is the only place membership is declared.
         let mut nav_items = vec![
             SettingsNavItem::Page(SettingsSection::Account),
-            SettingsNavItem::Umbrella(SettingsUmbrella::new(
-                "Agents",
-                vec![
-                    SettingsSection::WarpAgent,
-                    SettingsSection::AgentProfiles,
-                    SettingsSection::AgentMCPServers,
-                    SettingsSection::Knowledge,
-                    SettingsSection::ThirdPartyCLIAgents,
-                ],
-            )),
+            SettingsNavItem::Umbrella(SettingsUmbrella::new("Agents", agent_subpages)),
             SettingsNavItem::Page(SettingsSection::BillingAndUsage),
             SettingsNavItem::Umbrella(SettingsUmbrella::new(
                 "Code",
@@ -1457,9 +1507,36 @@ impl SettingsView {
             );
         }
 
+        if warp_core::mywarp::enabled() {
+            settings_pages.retain(|page| page.section.available_in_mywarp());
+            nav_items.retain_mut(|item| match item {
+                SettingsNavItem::Page(section) => section.available_in_mywarp(),
+                SettingsNavItem::Umbrella(umbrella) => {
+                    umbrella
+                        .subpages
+                        .retain(|section| section.available_in_mywarp());
+                    umbrella
+                        .subpage_button_states
+                        .truncate(umbrella.subpages.len());
+                    !umbrella.subpages.is_empty()
+                }
+            });
+        }
+        let page = if warp_core::mywarp::enabled() {
+            Some(
+                page.filter(|section| section.available_in_mywarp())
+                    .unwrap_or(SettingsSection::WarpAgent),
+            )
+        } else {
+            page
+        };
         let initial_page = match page {
             Some(SettingsSection::Scripting) if !FeatureFlag::WarpControlCli.is_enabled() => {
-                SettingsSection::Account
+                if warp_core::mywarp::enabled() {
+                    SettingsSection::WarpAgent
+                } else {
+                    SettingsSection::Account
+                }
             }
             other => other.unwrap_or_default(),
         };
@@ -1935,6 +2012,10 @@ impl SettingsView {
     ) {
         match event {
             WarpAgentPageEvent::FocusModal => ctx.focus(&self.search_editor),
+            #[cfg(windows)]
+            WarpAgentPageEvent::OpenProviderConfigFile(path) => {
+                ctx.emit(SettingsViewEvent::OpenProviderConfigFile(path.clone()));
+            }
             #[cfg(feature = "local_fs")]
             WarpAgentPageEvent::OpenCustomRouterEditor(router) => {
                 ctx.emit(SettingsViewEvent::OpenCustomRouterEditor(router.clone()));
@@ -2043,6 +2124,11 @@ impl SettingsView {
         allow_steal_focus: bool,
         ctx: &mut ViewContext<Self>,
     ) {
+        let section = if warp_core::mywarp::enabled() && !section.available_in_mywarp() {
+            SettingsSection::WarpAgent
+        } else {
+            section
+        };
         // Every nav target owns its backing page. Check it exists.
         if self.settings_page(section).is_none() {
             return;
@@ -2771,7 +2857,12 @@ impl TypedActionView for SettingsView {
                 }
             }
             SettingsAction::WarpAgent(ai_action) => {
-                if let Some(warp_agent_page) = self.settings_page(SettingsSection::WarpAgent)
+                let section = if self.current_settings_page == SettingsSection::WarpAgentBehavior {
+                    SettingsSection::WarpAgentBehavior
+                } else {
+                    SettingsSection::WarpAgent
+                };
+                if let Some(warp_agent_page) = self.settings_page(section)
                     && let SettingsPageViewHandle::WarpAgent(view) = &warp_agent_page.view_handle
                 {
                     view.update(ctx, |view, ctx| {
@@ -2905,6 +2996,77 @@ impl BackingView for SettingsView {
     fn set_focus_handle(&mut self, focus_handle: PaneFocusHandle, _ctx: &mut ViewContext<Self>) {
         self.focus_handle = Some(focus_handle);
     }
+}
+
+#[cfg(all(windows, feature = "provider-settings-check"))]
+pub fn native_save_provider_with_configuration_reload(
+    app: &mut warpui::App,
+    window: warpui::WindowId,
+) {
+    let view = app
+        .views_of_type::<WarpAgentPageView>(window)
+        .and_then(|views| views.first().cloned())
+        .expect("provider settings view");
+    view.update(app, |view, ctx| {
+        view.save_provider_with_configuration_reload(ctx);
+    });
+}
+
+#[cfg(all(windows, feature = "provider-settings-check"))]
+pub(crate) fn native_provider_setup_ready(app: &warpui::App, window: warpui::WindowId) -> bool {
+    app.views_of_type::<WarpAgentPageView>(window)
+        .is_some_and(|views| {
+            views
+                .iter()
+                .any(|view| view.read(app, |view, _| view.provider_setup_ready()))
+        })
+}
+
+#[cfg(all(windows, feature = "provider-settings-check"))]
+pub(crate) fn native_profiles_ready(app: &warpui::App, window: warpui::WindowId) -> bool {
+    app.views_of_type::<SettingsView>(window)
+        .is_some_and(|views| {
+            views.iter().any(|view| {
+                view.read(app, |view, _| {
+                    view.current_settings_page == SettingsSection::AgentProfiles
+                })
+            })
+        })
+        && app
+            .views_of_type::<AgentProfilesPageView>(window)
+            .is_some_and(|views| {
+                views
+                    .iter()
+                    .any(|view| view.read(app, |view, _| view.profile_count() >= 2))
+            })
+}
+
+#[cfg(all(windows, feature = "provider-settings-check"))]
+pub(crate) fn native_provider_key_is_masked(app: &warpui::App, window: warpui::WindowId) -> bool {
+    app.views_of_type::<WarpAgentPageView>(window)
+        .is_some_and(|views| {
+            views
+                .iter()
+                .any(|view| view.read(app, |view, ctx| view.provider_key_is_masked(ctx)))
+        })
+}
+
+#[cfg(all(windows, feature = "provider-settings-check"))]
+pub(crate) fn native_provider_configuration_matches(
+    app: &warpui::App,
+    window: warpui::WindowId,
+    model: &str,
+    draft: &str,
+    invalid: bool,
+) -> bool {
+    app.views_of_type::<WarpAgentPageView>(window)
+        .is_some_and(|views| {
+            views.iter().any(|view| {
+                view.read(app, |view, ctx| {
+                    view.provider_configuration_matches(model, draft, invalid, ctx)
+                })
+            })
+        })
 }
 
 #[cfg(test)]

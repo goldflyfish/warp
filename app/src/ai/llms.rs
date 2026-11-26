@@ -901,6 +901,23 @@ impl LLMPreferences {
         #[cfg(feature = "agent_mode_evals")]
         me.refresh_available_models(&ResolvedTeamScope::teamless(), ctx);
 
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled()
+            && ctx.has_singleton_model::<crate::configuration_watcher::ConfigurationWatcher>()
+        {
+            ctx.subscribe_to_model(
+                &crate::configuration_watcher::ConfigurationWatcher::handle(ctx),
+                |me, _, event, ctx| {
+                    if matches!(
+                        event,
+                        crate::configuration_watcher::ConfigurationEvent::Changed
+                    ) {
+                        me.refresh_public_models(ctx);
+                    }
+                },
+            );
+        }
+
         me
     }
 

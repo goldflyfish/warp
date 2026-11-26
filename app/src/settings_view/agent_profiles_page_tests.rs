@@ -1,5 +1,31 @@
-use super::{AllowanceCents, allowance_cents, format_allowance_count};
+use warpui::App;
+
+use super::{AgentsWidget, AllowanceCents, allowance_cents, format_allowance_count};
 use crate::settings::UsageDisplayUnit;
+use crate::settings_view::settings_page::{FilteredPageType, PageType};
+
+#[test]
+fn profile_search_finds_restored_models_and_permissions() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let mut page =
+                PageType::new_uncategorized(vec![Box::new(AgentsWidget::default())], None);
+            assert!(page.update_filter("full terminal", ctx).is_truthy());
+            assert!(page.update_filter("interact running", ctx).is_truthy());
+            assert!(page.update_filter("ask questions", ctx).is_truthy());
+            assert!(page.update_filter("orchestrated agents", ctx).is_truthy());
+            assert!(page.update_filter("mcp denylist", ctx).is_truthy());
+            assert!(page.update_filter("web tools", ctx).is_truthy());
+            assert!(page.update_filter("sync plans", ctx).is_truthy());
+            assert!(!page.update_filter("nonexistent setting", ctx).is_truthy());
+            page.update_filter("", ctx);
+            let FilteredPageType::Uncategorized { widgets, .. } = page.get_filtered() else {
+                panic!("expected profile widgets");
+            };
+            assert_eq!(widgets.len(), 1);
+        });
+    });
+}
 
 #[test]
 fn allowance_cents_requires_the_dollars_unit_and_both_figures() {

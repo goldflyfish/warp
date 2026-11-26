@@ -1025,3 +1025,35 @@ fn ai_autodetection_setting_can_be_toggled_on_and_off() {
         });
     });
 }
+
+#[test]
+fn mywarp_ai_needs_no_warp_auth_and_ignores_the_old_signup_disable_flag() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        AISettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings.is_any_ai_enabled.set_value(false, ctx).unwrap();
+            assert!(settings.is_any_ai_enabled(ctx));
+            assert!(settings.is_active_ai_enabled(ctx));
+            assert_eq!(
+                settings.is_voice_input_enabled(ctx),
+                cfg!(feature = "voice_input")
+            );
+            settings.native_agent_enabled.set_value(false, ctx).unwrap();
+            assert!(!settings.is_any_ai_enabled(ctx));
+            settings.native_agent_enabled.set_value(true, ctx).unwrap();
+            assert!(settings.is_any_ai_enabled(ctx));
+            assert_eq!(
+                *settings.native_chat_runtime.value(),
+                NativeChatRuntime::OpenCode
+            );
+            settings
+                .default_session_mode_internal
+                .set_value(DefaultSessionMode::CloudAgent, ctx)
+                .unwrap();
+            assert_eq!(
+                settings.default_session_mode(ctx),
+                DefaultSessionMode::Agent
+            );
+        });
+    });
+}

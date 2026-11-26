@@ -333,11 +333,6 @@ fn run_agent(
             if args.harness != Harness::Oz && !FeatureFlag::AgentHarness.is_enabled() {
                 return Err(anyhow::anyhow!("unexpected argument '--harness' found"));
             }
-            if args.harness == Harness::OpenCode {
-                return Err(anyhow::anyhow!(
-                    "The opencode harness is only supported for local child agent launches."
-                ));
-            }
             if args.harness_transport.is_some() && !FeatureFlag::AcpHarness.is_enabled() {
                 return Err(anyhow::anyhow!(
                     "unexpected argument '--harness-transport' found"

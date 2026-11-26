@@ -15,7 +15,7 @@ use crate::workflows::workflow::{Argument, Workflow};
 use crate::workspaces::user_workspaces::UserWorkspaces;
 
 /// Generated command metadata from server.
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct GeneratedCommandMetadata {
     pub command: String,
     pub title: String,
@@ -24,7 +24,7 @@ pub struct GeneratedCommandMetadata {
 }
 
 /// Metadata for a parameter in the workflow.
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct GeneratedArgument {
     pub name: String,
     pub description: String,

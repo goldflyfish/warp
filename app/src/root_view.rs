@@ -1926,7 +1926,7 @@ impl RootView {
             workspace_setting,
         };
 
-        let auth_onboarding_state = if auth_state.is_logged_in() {
+        let auth_onboarding_state = if warp_core::mywarp::enabled() || auth_state.is_logged_in() {
             AuthOnboardingState::Terminal(workspace_args.create_workspace(ctx))
         } else {
             cfg_if! {
@@ -3553,6 +3553,9 @@ impl RootView {
     }
 
     fn handle_auth_manager_event(&mut self, event: &AuthManagerEvent, ctx: &mut ViewContext<Self>) {
+        if warp_core::mywarp::enabled() {
+            return;
+        }
         let auth_state = AuthStateProvider::as_ref(ctx).get().clone();
 
         match event {

@@ -79,7 +79,7 @@ impl JobObject {
         self
     }
 
-    fn create_internal(self) -> Result<(), win32job::JobError> {
+    fn create_internal(self) -> Result<win32job::Job, win32job::JobError> {
         let job = win32job::Job::create()?;
 
         let mut info = job.query_extended_limit_info()?;
@@ -99,15 +99,22 @@ impl JobObject {
             job.assign_process(process)?;
         }
 
-        Box::leak(Box::new(job));
-        Ok(())
+        Ok(job)
+    }
+
+    /// Creates an owned job whose processes are terminated when its handle is dropped.
+    pub fn create_scoped(self) -> Result<win32job::Job, JobObjectError> {
+        self.create_internal().map_err(Into::into)
     }
 
     /// Creates a new Job Object and assigns any specified processes to it. The
     /// handle to the job is leaked to ensure that the job lives for the lifetime
     /// of the program.
     pub fn create(self) -> Result<(), JobObjectError> {
-        self.create_internal().map_err(Into::into)
+        Box::leak(Box::new(
+            self.create_internal().map_err(JobObjectError::from)?,
+        ));
+        Ok(())
     }
 }
 
@@ -145,3 +152,7 @@ impl CommandExt for crate::r#async::Command {
         self
     }
 }
+
+#[cfg(test)]
+#[path = "windows_tests.rs"]
+mod tests;

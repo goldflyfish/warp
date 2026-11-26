@@ -101,7 +101,8 @@ fn default_manifest(harness: Harness) -> Option<HarnessManifest> {
         Harness::Codex => ("codex-acp", &[], Some(&CodexHarness)),
         Harness::Gemini => ("gemini", &["--experimental-acp"], Some(&GeminiHarness)),
         Harness::Pi => ("pi-acp", &[], None),
-        Harness::Oz | Harness::OpenCode | Harness::Unknown => return None,
+        Harness::OpenCode => ("opencode", &["acp"], None),
+        Harness::Oz | Harness::Unknown => return None,
     };
     Some(HarnessManifest {
         launch: AcpLaunchSpec {

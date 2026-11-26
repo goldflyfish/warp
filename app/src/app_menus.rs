@@ -63,6 +63,26 @@ const MAX_RECENT_REPOS_IN_MENU: usize = 10;
 
 /// Creates the root app menu bar
 pub fn menu_bar(ctx: &mut AppContext) -> MenuBar {
+    if warp_core::mywarp::enabled() {
+        return MenuBar::new(vec![
+            Menu::new(
+                "MyWarp",
+                vec![
+                    updateable_custom_item_without_checkmark(CustomAction::ShowSettings, ctx),
+                    updateable_custom_item_without_checkmark(
+                        CustomAction::ToggleKeybindingsPage,
+                        ctx,
+                    ),
+                ],
+            ),
+            make_new_file_menu(ctx),
+            make_new_edit_menu(ctx),
+            make_new_tab_menu(ctx),
+            make_new_blocks_menu(ctx),
+            make_new_ai_menu(ctx),
+            make_new_window_menu(),
+        ]);
+    }
     MenuBar::new(vec![
         make_new_app_menu(ctx),
         make_new_file_menu(ctx),
@@ -530,14 +550,17 @@ fn make_new_ai_menu(ctx: &AppContext) -> Menu {
         updateable_custom_item_without_checkmark(CustomAction::AISearch, ctx),
     ]);
 
-    if FeatureFlag::AIRules.is_enabled() {
+    if !warp_core::mywarp::enabled() && FeatureFlag::AIRules.is_enabled() {
         items.extend([
             MenuItem::Separator,
             updateable_custom_item_without_checkmark(CustomAction::OpenAIFactCollection, ctx),
         ]);
     }
 
-    if FeatureFlag::McpServer.is_enabled() && ContextFlag::ShowMCPServers.is_enabled() {
+    if !warp_core::mywarp::enabled()
+        && FeatureFlag::McpServer.is_enabled()
+        && ContextFlag::ShowMCPServers.is_enabled()
+    {
         items.push(updateable_custom_item_without_checkmark(
             CustomAction::OpenMCPServerCollection,
             ctx,
@@ -565,9 +588,13 @@ fn make_new_blocks_menu(ctx: &AppContext) -> Menu {
         ctx,
     ));
     items.push(MenuItem::Separator);
+    if !warp_core::mywarp::enabled() {
+        items.extend([
+            updateable_custom_item_without_checkmark(CustomAction::CreateBlockPermalink, ctx),
+            non_updateable_custom_item(CustomAction::ViewSharedBlocks, ctx),
+        ]);
+    }
     items.extend([
-        updateable_custom_item_without_checkmark(CustomAction::CreateBlockPermalink, ctx),
-        non_updateable_custom_item(CustomAction::ViewSharedBlocks, ctx),
         updateable_custom_item_without_checkmark(CustomAction::ToggleBookmarkBlock, ctx),
         updateable_custom_item_without_checkmark(CustomAction::FindWithinBlock, ctx),
         MenuItem::Separator,

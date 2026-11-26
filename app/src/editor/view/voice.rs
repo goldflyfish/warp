@@ -265,9 +265,10 @@ impl EditorView {
                     return false;
                 }
 
-                if !crate::ai::AIRequestUsageModel::handle(ctx)
-                    .as_ref(ctx)
-                    .can_request_voice()
+                if !warp_core::mywarp::enabled()
+                    && !crate::ai::AIRequestUsageModel::handle(ctx)
+                        .as_ref(ctx)
+                        .can_request_voice()
                 {
                     self.voice_error_toast(super::VOICE_LIMIT_HIT_TOAST_TEXT, ctx);
                     return false;
@@ -528,6 +529,9 @@ impl EditorView {
             Ok(transcribe_response) => {
                 log::debug!("Transcribed voice input: {transcribe_response:?}");
                 self.user_insert(&transcribe_response, ctx);
+            }
+            Err(e) if warp_core::mywarp::enabled() => {
+                self.voice_error_toast(&e.to_string(), ctx);
             }
             Err(e) => match e {
                 TranscribeError::QuotaLimit => {

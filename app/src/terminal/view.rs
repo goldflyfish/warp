@@ -22261,9 +22261,10 @@ impl TerminalView {
         block_index: BlockIndex,
         ctx: &mut ViewContext<Self>,
     ) {
-        if AuthStateProvider::as_ref(ctx)
-            .get()
-            .is_anonymous_or_logged_out()
+        if !warp_core::mywarp::enabled()
+            && AuthStateProvider::as_ref(ctx)
+                .get()
+                .is_anonymous_or_logged_out()
         {
             AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
                 auth_manager.attempt_login_gated_feature(
@@ -28598,6 +28599,26 @@ impl TypedActionView for TerminalView {
                 });
             }
             ToggleAutoexecuteMode => {
+                if warp_core::mywarp::enabled()
+                    && let Some(id) =
+                        BlocklistAIHistoryModel::as_ref(ctx).active_conversation_id(self.view_id)
+                    && self.ai_controller.as_ref(ctx).has_provider_chat(id, ctx)
+                {
+                    self.ai_controller.update(ctx, |controller, ctx| {
+                        let enabled = !controller.provider_auto_approve_enabled(ctx)
+                            && !BlocklistAIHistoryModel::as_ref(ctx)
+                                .conversation(&id)
+                                .is_some_and(|conversation| conversation.autoexecute_any_action());
+                        if let Err(error) = controller.set_provider_auto_approve(id, enabled, ctx) {
+                            controller
+                                .provider_chat()
+                                .clone()
+                                .update(ctx, |runtime, ctx| runtime.set_error(id, error, ctx));
+                        }
+                    });
+                    ctx.notify();
+                    return;
+                }
                 // Cloud (ambient) agent conversations run with fast-forward conceptually
                 // always on, so toggling it from the chip or keybinding is a no-op there.
                 let is_locked = {

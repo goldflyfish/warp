@@ -17,3 +17,8 @@ pub struct PassiveSuggestionsModels {
     pub legacy: ModelHandle<LegacyPassiveSuggestionsModel>,
     pub maa: ModelHandle<MaaPassiveSuggestionsModel>,
 }
+
+#[cfg(all(windows, feature = "provider-settings-check"))]
+pub(crate) async fn check_provider_code_suggestion() -> anyhow::Result<()> {
+    maa::check_provider_code_suggestion().await
+}

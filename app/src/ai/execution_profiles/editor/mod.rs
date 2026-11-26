@@ -1228,6 +1228,13 @@ impl ExecutionProfileEditorView {
             let llm_prefs = LLMPreferences::handle(ctx);
             let llm_prefs = llm_prefs.as_ref(ctx);
             let choices = get_choices(llm_prefs, &scope, ctx);
+            let placeholder = warp_core::mywarp::enabled().then(|| {
+                profile_model
+                    .as_ref()
+                    .filter(|id| !choices.iter().any(|model| &model.id == *id))
+                    .map(|id| format!("{id} (unavailable)"))
+                    .unwrap_or_else(|| "Connect a provider".to_owned())
+            });
 
             let has_upgrade_gated_models = choices
                 .iter()
@@ -1243,6 +1250,9 @@ impl ExecutionProfileEditorView {
                 &scope,
                 ctx,
             );
+            if let Some(placeholder) = placeholder {
+                dropdown.set_placeholder(placeholder, ctx);
+            }
             dropdown.set_rich_items(items, ctx);
 
             if has_upgrade_gated_models {

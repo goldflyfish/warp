@@ -249,6 +249,7 @@ fn test_title_update_refreshes_shadowing_task_title() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 
@@ -357,6 +358,7 @@ fn test_display_status_uses_matching_conversation_for_in_progress_task() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 
@@ -415,6 +417,7 @@ fn test_display_status_uses_active_execution_over_previous_conversation_status()
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 
@@ -480,6 +483,7 @@ fn test_display_status_updates_when_blocked_conversation_resumes() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 
@@ -561,6 +565,7 @@ fn test_display_status_terminal_task_state_overrides_matching_conversation() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 
@@ -617,6 +622,7 @@ fn test_status_filter_uses_display_status_for_task_backed_conversations() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 
@@ -1296,6 +1302,7 @@ fn test_get_entries_excludes_conversation_shadowed_by_child_task() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
         history_model.update(&mut app, |model, ctx| {
@@ -1449,6 +1456,7 @@ fn test_get_entries_merges_task_and_local_conversation_by_run_id() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 
@@ -1505,6 +1513,7 @@ fn test_get_entries_merges_task_and_local_conversation_by_server_token() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 
@@ -1801,6 +1810,7 @@ fn test_resolve_open_action_returns_none_for_active_unattachable_session() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 
@@ -2160,6 +2170,7 @@ fn test_server_token_assignment_updates_copy_link_resolution() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 
@@ -2323,6 +2334,7 @@ fn test_resolve_copy_link_uses_attached_synced_conversation_for_task_without_tok
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 
@@ -2704,6 +2716,7 @@ fn test_get_entries_prefers_task_when_task_id_matches_conversation_run_id() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 
@@ -2766,6 +2779,7 @@ fn test_get_entries_prefers_task_when_server_token_matches() {
                 last_event_sequence: None,
                 pinned: false,
                 use_warp_credits_instead_of_chatgpt: false,
+                provider_session: None,
             },
         );
 

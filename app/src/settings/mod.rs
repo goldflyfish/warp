@@ -603,7 +603,7 @@ pub struct ExtraMetaKeysChangedArg {
 
 /// Returns the path to the user preferences file.
 pub fn user_preferences_file_path() -> PathBuf {
-    warp_core::paths::config_local_dir().join("user_preferences.json")
+    warp_core::paths::private_config_local_dir().join("user_preferences.json")
 }
 
 /// Returns the path to the TOML settings file for the active settings surface.

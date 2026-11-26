@@ -104,7 +104,7 @@ fn apply_server_availability(app: &mut App, availability: AICreditAvailability) 
 }
 
 fn determine_state(app: &mut App) -> PromptAlertState {
-    app.read(|ctx| PromptAlertView::determine_state(&TeamlessScopeForTest, ctx))
+    app.read(|ctx| PromptAlertView::determine_warp_credit_state(&TeamlessScopeForTest, ctx))
 }
 
 #[test]
@@ -523,5 +523,21 @@ fn test_out_of_credits_with_local_key_maps_to_no_alert() {
             AICreditAvailability::unavailable(AICreditDenialReason::OutOfCredits),
         );
         assert_eq!(determine_state(&mut app), PromptAlertState::NoAlert);
+    });
+}
+
+#[test]
+fn mywarp_does_not_apply_warp_account_credit_or_connection_gates() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            assert_eq!(
+                PromptAlertView::determine_state(&TeamlessScopeForTest, ctx),
+                PromptAlertState::NoAlert
+            );
+            assert!(!PromptAlertView::does_alert_block_ai_requests(
+                &TeamlessScopeForTest,
+                ctx
+            ));
+        });
     });
 }

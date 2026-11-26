@@ -280,7 +280,7 @@ pub enum Harness {
     Oz,
     /// Delegate to the `claude` CLI.
     Claude,
-    /// Delegate to the `opencode` CLI.
+    /// Run OpenCode over ACP in the native conversation UI.
     OpenCode,
     /// Delegate to the `gemini` CLI.
     Gemini,
@@ -310,7 +310,7 @@ impl ValueEnum for Harness {
                 .help("Delegate to the `claude` CLI"),
             Harness::OpenCode => PossibleValue::new("opencode")
                 .alias("open-code")
-                .help("Delegate to the `opencode` CLI"),
+                .help("Run OpenCode over ACP in the native conversation UI"),
             Harness::Gemini => PossibleValue::new("gemini").help("Delegate to the `gemini` CLI"),
             Harness::Codex => PossibleValue::new("codex").help("Delegate to the `codex` CLI"),
             Harness::Pi => PossibleValue::new("pi"),
@@ -660,8 +660,8 @@ pub struct RunAgentArgs {
     pub harness: Harness,
 
     /// How to drive a third-party harness. Unset means the harness's interactive CLI runs in the
-    /// terminal session; `acp` drives the harness over the Agent Client Protocol instead. Has no
-    /// effect on the `oz` harness.
+    /// terminal session; `acp` drives the harness over the Agent Client Protocol instead.
+    /// OpenCode and Pi always use ACP. Has no effect on the `oz` harness.
     ///
     /// Cloud workers set this through `WARP_HARNESS_TRANSPORT` rather than the flag, so a pinned
     /// CLI predating this option ignores it instead of rejecting an unknown argument.

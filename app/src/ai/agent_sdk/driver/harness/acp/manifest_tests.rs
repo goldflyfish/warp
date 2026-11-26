@@ -14,6 +14,18 @@ const PROGRAM: &str = "adapter.exe";
 #[cfg(not(windows))]
 const PROGRAM: &str = "adapter";
 
+#[test]
+fn opencode_discovers_its_native_acp_command_without_a_sidecar() {
+    let root = tempdir().unwrap();
+
+    let selected = discover(Harness::OpenCode, None, root.path()).unwrap();
+
+    assert_eq!(selected.launch.program, "opencode");
+    assert_eq!(selected.launch.args, ["acp"]);
+    assert!(!selected.is_sidecar);
+    assert!(selected.auth_check_command.is_none());
+}
+
 fn write_manifest(path: &Path, args: &[&str]) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(

@@ -143,6 +143,11 @@ pub struct AgentProfilesPageView {
 }
 
 impl AgentProfilesPageView {
+    #[cfg(all(windows, feature = "provider-settings-check"))]
+    pub(super) fn profile_count(&self) -> usize {
+        self.profile_views.len()
+    }
+
     pub fn new(ctx: &mut ViewContext<Self>) -> Self {
         let self_handle = ctx.handle();
         let is_any_ai_enabled = AISettings::as_ref(ctx).is_any_ai_enabled(ctx);
@@ -926,6 +931,9 @@ impl AgentProfilesPageView {
     }
 
     fn build_page(ctx: &mut ViewContext<Self>) -> PageType<Self> {
+        if warp_core::mywarp::enabled() {
+            return PageType::new_uncategorized(vec![Box::new(AgentsWidget::default())], None);
+        }
         // This page is multi-section: it renders its own subheader-sized
         // section titles inside each widget, so it gets no page-level title,
         // in either arm below.
@@ -1814,6 +1822,13 @@ impl SettingsPageMeta for AgentProfilesPageView {
     }
 
     fn on_page_selected(&mut self, _: bool, ctx: &mut ViewContext<Self>) {
+        if warp_core::mywarp::enabled() {
+            let scope = ResolvedTeamScope::from_scope(&self.team_context(ctx));
+            LLMPreferences::handle(ctx).update(ctx, |preferences, ctx| {
+                preferences.refresh_available_models(&scope, ctx);
+            });
+            return;
+        }
         // The usage widget on this page is the only consumer of the request
         // usage model, so the refresh lives here.
         AIRequestUsageModel::handle(ctx).update(ctx, |ai_request_usage_model, ctx| {
@@ -2265,6 +2280,9 @@ impl SettingsWidget for AgentsWidget {
     type View = AgentProfilesPageView;
 
     fn search_terms(&self) -> &str {
+        if warp_core::mywarp::enabled() {
+            return "ai a.i. agent profiles model models llms autonomy permissions allowlist denylist commands read files full terminal use interact running ask questions orchestrated agents mcp servers web tools search auto-sync plans warp drive";
+        }
         if should_show_mcp_servers() {
             "ai a.i. agent autonomy profiles allowlist denylist autoexecute permissions models llms planning mcp server"
         } else {

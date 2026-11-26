@@ -267,7 +267,11 @@ pub fn render_models_section(
         .with_child(render_filterable_dropdown_row(
             appearance,
             "Base model",
-            "This model serves as the primary engine behind the agent. It powers most interactions and invokes other models for tasks like planning or code generation when necessary. Warp may automatically switch to alternate models based on model availability or for auxiliary tasks such as conversation summarization.",
+            if warp_core::mywarp::enabled() {
+                "The provider and model used for conversations with this profile. Connect providers in Settings → Agents → AI providers. Reasoning effort can be selected in the chat footer."
+            } else {
+                "This model serves as the primary engine behind the agent. It powers most interactions and invokes other models for tasks like planning or code generation when necessary. Warp may automatically switch to alternate models based on model availability or for auxiliary tasks such as conversation summarization."
+            },
             &view.base_model_dropdown,
         ));
 

@@ -73,7 +73,7 @@ fn test_duplicate_redirect_for_logged_in_user_is_silently_ignored() {
 
         // First call: state validates and is consumed.
         AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
-            auth_manager.initialize_user_from_auth_payload(auth_payload.clone(), true, ctx);
+            auth_manager.initialize_warp_user_from_auth_payload(auth_payload.clone(), true, ctx);
         });
 
         // The CSRF token must be single-use: successful validation clears it.
@@ -88,7 +88,7 @@ fn test_duplicate_redirect_for_logged_in_user_is_silently_ignored() {
         // logged in as the test user and the incoming user_uid matches, so we
         // must silently drop the redirect without emitting any AuthFailed event.
         AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
-            auth_manager.initialize_user_from_auth_payload(auth_payload, true, ctx);
+            auth_manager.initialize_warp_user_from_auth_payload(auth_payload, true, ctx);
         });
     });
 }
@@ -225,7 +225,7 @@ fn test_stale_state_when_logged_out_emits_invalid_state_parameter() {
         };
 
         AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
-            auth_manager.initialize_user_from_auth_payload(bogus_payload, true, ctx);
+            auth_manager.initialize_warp_user_from_auth_payload(bogus_payload, true, ctx);
         });
 
         assert!(
@@ -262,7 +262,7 @@ fn test_mismatched_state_with_different_user_uid_emits_invalid_state_parameter()
         };
 
         AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
-            auth_manager.initialize_user_from_auth_payload(attacker_payload, true, ctx);
+            auth_manager.initialize_warp_user_from_auth_payload(attacker_payload, true, ctx);
         });
 
         assert!(
@@ -348,6 +348,41 @@ fn test_persist_skips_when_api_key_authenticated() {
 
         AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
             auth_manager.persist(ctx);
+        });
+    });
+}
+
+#[test]
+fn mywarp_ignores_warp_login_redirects_without_creating_a_user() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.update(|ctx| {
+            let state = AuthStateProvider::as_ref(ctx).get();
+            state.set_user(None);
+            state.set_credentials(None);
+        });
+        AuthManager::handle(&app).update(&mut app, |manager, ctx| {
+            manager.auth_client = Arc::new(MockAuthClient::new());
+            let pending = manager.generate_auth_state();
+            manager.initialize_user_from_auth_payload(
+                AuthRedirectPayload {
+                    refresh_token: RefreshToken::new("unused-fixture-token"),
+                    user_uid: Some(UserUid::new("unused-fixture-user")),
+                    deleted_anonymous_user: Some(false),
+                    state: Some(pending.clone()),
+                },
+                true,
+                ctx,
+            );
+            assert_eq!(
+                manager.pending_auth_state.as_deref(),
+                Some(pending.as_str())
+            );
+        });
+        app.read(|ctx| {
+            let state = AuthStateProvider::as_ref(ctx).get();
+            assert!(!state.is_logged_in());
+            assert!(state.credentials().is_none());
         });
     });
 }

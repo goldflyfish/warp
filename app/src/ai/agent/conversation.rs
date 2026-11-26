@@ -70,7 +70,8 @@ use crate::notebooks::NotebookId;
 use crate::persistence::ModelEvent;
 use crate::persistence::model::{
     AgentConversationData, ChargedUsageTotals, ContextWindowSegment, ConversationUsageMetadata,
-    ModelTokenUsage, PRIMARY_AGENT_CATEGORY, PersistedAutoexecuteMode, ToolUsageMetadata,
+    ModelTokenUsage, PRIMARY_AGENT_CATEGORY, PersistedAutoexecuteMode, ProviderChatSession,
+    ToolUsageMetadata,
 };
 use crate::server::ids::ServerId;
 use crate::terminal::general_settings::GeneralSettings;
@@ -444,6 +445,7 @@ pub struct AIConversation {
     /// Whether the user chose Warp-funded inference for this conversation after a ChatGPT
     /// token-sharing failure. Sticky for the rest of the conversation and inherited by forks.
     use_warp_credits_instead_of_chatgpt: bool,
+    provider_session: Option<ProviderChatSession>,
 }
 
 pub(crate) fn artifact_from_fork_proto(
@@ -509,6 +511,7 @@ impl AIConversation {
             remote_run_updated_at: None,
             task_sync_mode: TaskSyncMode::default(),
             use_warp_credits_instead_of_chatgpt: false,
+            provider_session: None,
         }
     }
 
@@ -646,6 +649,7 @@ impl AIConversation {
             last_event_sequence,
             pinned,
             use_warp_credits_instead_of_chatgpt,
+            provider_session,
         ) = if let Some(data) = conversation_data {
             let server_conversation_token = data
                 .server_conversation_token
@@ -703,6 +707,7 @@ impl AIConversation {
                 data.last_event_sequence,
                 data.pinned,
                 data.use_warp_credits_instead_of_chatgpt,
+                data.provider_session,
             )
         } else {
             (
@@ -722,9 +727,12 @@ impl AIConversation {
                 None,
                 false,
                 false,
+                None,
             )
         };
-        let driver = if is_remote_child {
+        let driver = if provider_session.is_some() {
+            ConversationDriver::ExternalHarness
+        } else if is_remote_child {
             ConversationDriver::RemoteChild
         } else {
             ConversationDriver::Native
@@ -768,6 +776,7 @@ impl AIConversation {
             remote_run_updated_at: None,
             task_sync_mode: TaskSyncMode::default(),
             use_warp_credits_instead_of_chatgpt,
+            provider_session,
         })
     }
 
@@ -785,6 +794,19 @@ impl AIConversation {
             });
         }
         self.task_store.rebuild_exchange_index();
+    }
+
+    pub fn provider_session(&self) -> Option<&ProviderChatSession> {
+        self.provider_session.as_ref()
+    }
+
+    pub(crate) fn set_provider_session(&mut self, session: Option<ProviderChatSession>) {
+        self.driver = if session.is_some() {
+            ConversationDriver::ExternalHarness
+        } else {
+            ConversationDriver::Native
+        };
+        self.provider_session = session;
     }
 
     pub fn driver(&self) -> ConversationDriver {
@@ -2366,10 +2388,12 @@ impl AIConversation {
             });
         }
 
-        self.server_conversation_token =
-            Some(ServerConversationToken::new(init_event.conversation_id));
-        let run_id = Some(init_event.run_id).filter(|s| !s.is_empty());
-        self.task_id = run_id.as_deref().and_then(|id| id.parse().ok());
+        if self.provider_session.is_none() {
+            self.server_conversation_token =
+                Some(ServerConversationToken::new(init_event.conversation_id));
+            let run_id = Some(init_event.run_id).filter(|s| !s.is_empty());
+            self.task_id = run_id.as_deref().and_then(|id| id.parse().ok());
+        }
         Ok(())
     }
 
@@ -4037,6 +4061,7 @@ impl AIConversation {
             conversation_id: self.id.to_string(),
             updated_tasks,
             conversation_data: AgentConversationData {
+                provider_session: self.provider_session.clone(),
                 server_conversation_token: self
                     .server_conversation_token
                     .clone()

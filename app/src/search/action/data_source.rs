@@ -83,6 +83,26 @@ impl CommandBindingDataSource {
             .into_iter()
             .filter_map(|lens| CommandBinding::from_lens(lens, ctx))
             .filter(|binding| binding_filter_fn.as_ref().is_none_or(|f| f(binding)))
+            .filter(|binding| {
+                use crate::workspace::WorkspaceAction;
+                !warp_core::mywarp::enabled()
+                    || match binding
+                        .action
+                        .as_ref()
+                        .and_then(|action| action.as_any().downcast_ref::<WorkspaceAction>())
+                    {
+                        Some(
+                            WorkspaceAction::ShowUpgrade
+                            | WorkspaceAction::SignupAnonymousUser
+                            | WorkspaceAction::SignInAnonymousWebUser
+                            | WorkspaceAction::OpenCloudAgentSetupGuide,
+                        ) => false,
+                        Some(WorkspaceAction::ShowSettingsPage(section)) => {
+                            section.available_in_mywarp()
+                        }
+                        _ => true,
+                    }
+            })
             .map(Arc::new)
             .map(|binding| (binding.id, binding))
             .collect();

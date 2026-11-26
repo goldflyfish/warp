@@ -310,21 +310,13 @@ impl fmt::Debug for HarnessKind {
 /// a CLI agent block in the terminal.
 pub(crate) fn renders_natively(harness: Harness, transport: HarnessTransport) -> bool {
     match (harness, transport) {
-        (Harness::Oz | Harness::Pi, _) => true,
+        (Harness::Oz | Harness::Pi | Harness::OpenCode, _) => true,
         (
-            Harness::Claude
-            | Harness::Codex
-            | Harness::Gemini
-            | Harness::OpenCode
-            | Harness::Unknown,
+            Harness::Claude | Harness::Codex | Harness::Gemini | Harness::Unknown,
             HarnessTransport::Acp,
         ) => true,
         (
-            Harness::Claude
-            | Harness::Codex
-            | Harness::Gemini
-            | Harness::OpenCode
-            | Harness::Unknown,
+            Harness::Claude | Harness::Codex | Harness::Gemini | Harness::Unknown,
             HarnessTransport::Pty,
         ) => false,
     }
@@ -338,16 +330,12 @@ pub(crate) fn harness_kind(
     harness: Harness,
     transport: HarnessTransport,
 ) -> Result<HarnessKind, AgentDriverError> {
-    // The transport only selects how a third-party harness is driven; Oz is Warp's own loop
-    // and Pi has no interactive CLI mode, so neither consults it.
+    // OpenCode and Pi use the native conversation UI on every run, so they always use ACP.
+    // Oz runs Warp's own loop and does not consult the transport.
     match harness {
         Harness::Oz => return Ok(HarnessKind::Oz),
-        Harness::Pi => return acp_harness_kind(harness),
-        Harness::Claude
-        | Harness::Codex
-        | Harness::OpenCode
-        | Harness::Gemini
-        | Harness::Unknown => {}
+        Harness::Pi | Harness::OpenCode => return acp_harness_kind(harness),
+        Harness::Claude | Harness::Codex | Harness::Gemini | Harness::Unknown => {}
     }
     match transport {
         HarnessTransport::Pty => match harness {
@@ -365,15 +353,13 @@ pub(crate) fn harness_kind(
 
 fn acp_harness_kind(harness: Harness) -> Result<HarnessKind, AgentDriverError> {
     match harness {
-        Harness::Claude | Harness::Codex | Harness::Gemini | Harness::Pi => {
+        Harness::Claude | Harness::Codex | Harness::Gemini | Harness::Pi | Harness::OpenCode => {
             Ok(HarnessKind::ThirdParty(Box::new(AcpHarness::new(harness)?)))
         }
-        Harness::Oz | Harness::OpenCode | Harness::Unknown => {
-            Err(AgentDriverError::HarnessSetupFailed {
-                harness: harness.to_string(),
-                reason: format!("The {harness} harness cannot be driven over ACP."),
-            })
-        }
+        Harness::Oz | Harness::Unknown => Err(AgentDriverError::HarnessSetupFailed {
+            harness: harness.to_string(),
+            reason: format!("The {harness} harness cannot be driven over ACP."),
+        }),
     }
 }
 
@@ -384,7 +370,8 @@ fn install_docs_url(harness: Harness) -> Option<&'static str> {
         Harness::Codex => Some("https://developers.openai.com/codex/cli"),
         Harness::Gemini => Some("https://geminicli.com/"),
         Harness::Pi => Some("https://github.com/svkozak/pi-acp#install"),
-        Harness::Oz | Harness::OpenCode | Harness::Unknown => None,
+        Harness::OpenCode => Some("https://opencode.ai/docs/"),
+        Harness::Oz | Harness::Unknown => None,
     }
 }
 

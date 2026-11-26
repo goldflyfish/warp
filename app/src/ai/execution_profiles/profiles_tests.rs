@@ -37,6 +37,51 @@ use crate::workspaces::user_profiles::UserProfiles;
 use crate::workspaces::user_workspaces::{TeamContextForOperation, UserWorkspaces};
 use crate::{LaunchMode, TuiEntryPoint};
 
+fn new_cloud_profile_model(
+    launch_mode: &LaunchMode,
+    ctx: &mut warpui::ModelContext<AIExecutionProfilesModel>,
+) -> AIExecutionProfilesModel {
+    AIExecutionProfilesModel::new_with_storage_mode(launch_mode, false, ctx)
+}
+
+#[test]
+fn mywarp_profiles_persist_models_without_waiting_for_cloud_initial_load() {
+    App::test((), |mut app| async move {
+        install_singletons(&mut app, AuthStateProvider::new_for_test());
+        let profiles = app.add_singleton_model(|ctx| {
+            AIExecutionProfilesModel::new_with_storage_mode(
+                &LaunchMode::new_for_unit_test(),
+                true,
+                ctx,
+            )
+        });
+        let id = profiles.update(&mut app, |profiles, ctx| {
+            let id = profiles
+                .create_profile(ctx)
+                .expect("local profile creation must not wait for cloud sync");
+            profiles.set_profile_name(&id, "Focused", ctx);
+            profiles.set_base_model(&id, Some(LLMId::from("custom/provider-model")), ctx);
+            id
+        });
+        let restored = app.add_model(|ctx| {
+            AIExecutionProfilesModel::new_with_storage_mode(
+                &LaunchMode::new_for_unit_test(),
+                true,
+                ctx,
+            )
+        });
+        restored.read(&app, |profiles, ctx| {
+            let profile = profiles.get_profile_by_id(&id, ctx).unwrap();
+            assert_eq!(profile.data().name, "Focused");
+            assert_eq!(
+                profile.data().base_model,
+                Some(LLMId::from("custom/provider-model"))
+            );
+            assert_eq!(profiles.get_all_profile_ids().len(), 2);
+        });
+    });
+}
+
 /// These tests mock `UserWorkspaces` with no teams, so no team policy can apply and the scope
 /// only has to exist. Scoped reads themselves are covered in `user_workspaces_tests`.
 fn test_scope() -> TeamContextForOperation {
@@ -166,7 +211,7 @@ fn tui_missing_collection_seeds_agent_decides_for_execute_commands() {
         let expected_legacy_seed = app.read(create_default_from_legacy_settings);
         let expected_tui_seed = app.read(create_default_for_tui_from_legacy_settings);
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(
+            new_cloud_profile_model(
                 &LaunchMode::Tui {
                     entrypoint: TuiEntryPoint::Interactive {
                         mount: Box::new(|_| {}),
@@ -203,7 +248,7 @@ fn tui_default_denylist_overrides_agent_decides_command_execution() {
     App::test((), |mut app| async move {
         install_singletons(&mut app, AuthStateProvider::new_for_test());
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(
+            new_cloud_profile_model(
                 &LaunchMode::Tui {
                     entrypoint: TuiEntryPoint::Interactive {
                         mount: Box::new(|_| {}),
@@ -275,7 +320,7 @@ fn tui_explicit_collection_preserves_execute_commands() {
         });
 
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(
+            new_cloud_profile_model(
                 &LaunchMode::Tui {
                     entrypoint: TuiEntryPoint::Interactive {
                         mount: Box::new(|_| {}),
@@ -302,7 +347,7 @@ fn gui_default_execute_commands_remains_always_ask() {
     App::test((), |mut app| async move {
         install_singletons(&mut app, AuthStateProvider::new_for_test());
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
 
         profile_model.read(&app, |model, ctx| {
@@ -327,7 +372,7 @@ fn edits_persist_on_unsynced_default_profile_when_logged_out() {
     App::test((), |mut app| async move {
         install_singletons(&mut app, AuthStateProvider::new_logged_out_for_test());
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
 
         let default_profile_id = profile_model.read(&app, |model, _ctx| model.default_profile_id());
@@ -387,7 +432,7 @@ fn explicit_local_collection_is_preserved_from_onboarding() {
         });
 
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
         complete_cloud_initial_load(&mut app);
 
@@ -428,7 +473,7 @@ fn migration_retries_after_pending_legacy_profile_receives_server_id() {
         });
 
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
         let terminal_id = profile_model.id();
         let pending_profile_id = profile_model.read(&app, |model, _| {
@@ -514,7 +559,7 @@ fn materialized_pending_profile_is_rekeyed_after_server_id_arrives() {
         });
 
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
         let pending_profile_id = profile_model.read(&app, |model, _| {
             model
@@ -562,8 +607,8 @@ fn materialized_pending_profile_is_rekeyed_after_server_id_arrives() {
                 Some(ActionPermission::AlwaysAllow)
             );
         });
-        let restored_model = app
-            .add_model(|ctx| AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx));
+        let restored_model =
+            app.add_model(|ctx| new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx));
         restored_model.read(&app, |model, ctx| {
             assert_eq!(
                 model.get_profile_id_by_sync_id(&SyncId::ServerId(server_id), ctx),
@@ -597,7 +642,7 @@ fn migration_retries_after_auth_completes() {
         });
 
         let _profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
         complete_cloud_initial_load(&mut app);
         app.read(|ctx| {
@@ -639,7 +684,7 @@ fn auth_completion_waits_for_cloud_initial_load_before_migrating() {
         app.add_singleton_model(AuthManager::new_for_test);
 
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
         AuthManager::handle(&app).update(&mut app, |_auth_manager, ctx| {
             AuthStateProvider::as_ref(ctx)
@@ -716,7 +761,7 @@ fn feature_disabled_keeps_legacy_backend_behavior() {
         });
 
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
         profile_model.update(&mut app, |model, ctx| {
             model.migrate_settings_profiles(ctx);
@@ -776,7 +821,7 @@ fn migration_imports_owned_legacy_profiles_with_deterministic_keys() {
         });
 
         app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
         complete_cloud_initial_load(&mut app);
 
@@ -831,7 +876,7 @@ fn pending_migration_keeps_legacy_default_model_until_import_succeeds() {
         });
 
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
 
         profile_model.read(&app, |model, ctx| {
@@ -897,7 +942,7 @@ fn malformed_cloud_collection_falls_back_to_legacy_import() {
         });
 
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
         complete_cloud_initial_load(&mut app);
 
@@ -935,7 +980,7 @@ fn malformed_cloud_collection_without_legacy_profiles_materializes_default() {
         });
 
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
         complete_cloud_initial_load(&mut app);
 
@@ -980,7 +1025,7 @@ fn settings_sync_disabled_imports_legacy_profiles() {
         });
 
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
         complete_cloud_initial_load(&mut app);
 
@@ -1008,7 +1053,7 @@ fn pre_login_edit_materializes_the_pending_collection() {
     App::test((), |mut app| async move {
         install_singletons(&mut app, AuthStateProvider::new_logged_out_for_test());
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
         let default_profile_id = profile_model.read(&app, |model, _| model.default_profile_id());
 
@@ -1029,8 +1074,8 @@ fn pre_login_edit_materializes_the_pending_collection() {
                 Some(ActionPermission::AlwaysAllow)
             );
         });
-        let restored_model = app
-            .add_model(|ctx| AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx));
+        let restored_model =
+            app.add_model(|ctx| new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx));
         restored_model.read(&app, |model, ctx| {
             assert_eq!(
                 model.default_profile(ctx).data().apply_code_diffs,
@@ -1047,7 +1092,7 @@ fn cloud_initial_load_retries_pending_migration() {
     App::test((), |mut app| async move {
         install_singletons(&mut app, AuthStateProvider::new_for_test());
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
         let server_id = ServerId::from(508);
         let legacy_model = LLMId::from("gpt-5-6-sol-high");
@@ -1117,7 +1162,7 @@ fn completed_migration_is_not_reapplied_and_legacy_ids_restore_after_restart() {
         });
 
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
         complete_cloud_initial_load(&mut app);
 
@@ -1146,8 +1191,8 @@ fn completed_migration_is_not_reapplied_and_legacy_ids_restore_after_restart() {
             );
         });
 
-        let restored_model = app
-            .add_model(|ctx| AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx));
+        let restored_model =
+            app.add_model(|ctx| new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx));
         restored_model.read(&app, |model, ctx| {
             assert_eq!(
                 model.get_profile_id_by_sync_id(&SyncId::ServerId(default_server_id), ctx,),
@@ -1168,7 +1213,7 @@ fn reset_without_explicit_collection_reimports_the_next_accounts_legacy_profile(
     App::test((), |mut app| async move {
         install_singletons(&mut app, AuthStateProvider::new_for_test());
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
         profile_model.update(&mut app, |model, _| model.reset(false));
 
@@ -1247,9 +1292,7 @@ fn profile_sources_preserve_state_across_migration_and_rollout() {
 
         let settings_model = {
             let _guard = FeatureFlag::FileBackedExecutionProfiles.override_enabled(true);
-            app.add_model(|ctx| {
-                AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
-            })
+            app.add_model(|ctx| new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx))
         };
         settings_model.update(&mut app, |model, ctx| {
             model.migrate_settings_profiles(ctx);
@@ -1279,9 +1322,7 @@ fn profile_sources_preserve_state_across_migration_and_rollout() {
 
         let legacy_model = {
             let _guard = FeatureFlag::FileBackedExecutionProfiles.override_enabled(false);
-            app.add_model(|ctx| {
-                AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
-            })
+            app.add_model(|ctx| new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx))
         };
         legacy_model.read(&app, |model, ctx| {
             assert_eq!(model.default_profile(ctx).data().name, "Legacy default");
@@ -1289,9 +1330,7 @@ fn profile_sources_preserve_state_across_migration_and_rollout() {
 
         let restored_settings_model = {
             let _guard = FeatureFlag::FileBackedExecutionProfiles.override_enabled(true);
-            app.add_model(|ctx| {
-                AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
-            })
+            app.add_model(|ctx| new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx))
         };
         restored_settings_model.read(&app, |model, ctx| {
             assert_eq!(model.default_profile(ctx).data().name, "Settings default");
@@ -1304,7 +1343,7 @@ fn profile_sources_preserve_state_across_migration_and_rollout() {
         let tui_model = {
             let _guard = FeatureFlag::FileBackedExecutionProfiles.override_enabled(false);
             app.add_model(|ctx| {
-                AIExecutionProfilesModel::new(
+                new_cloud_profile_model(
                     &LaunchMode::Tui {
                         entrypoint: TuiEntryPoint::Interactive {
                             mount: Box::new(|_| {}),
@@ -1326,7 +1365,7 @@ fn profile_sources_preserve_state_across_migration_and_rollout() {
         let cli_model = {
             let _guard = FeatureFlag::FileBackedExecutionProfiles.override_enabled(true);
             app.add_model(|ctx| {
-                AIExecutionProfilesModel::new(
+                new_cloud_profile_model(
                     &LaunchMode::CommandLine {
                         command: warp_cli::CliCommand::Whoami,
                         global_options: warp_cli::GlobalOptions::default(),
@@ -1361,7 +1400,7 @@ fn reconciles_unsynced_default_profile_with_cloud_after_initial_load() {
     App::test((), |mut app| async move {
         install_singletons(&mut app, AuthStateProvider::new_for_test());
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
 
         // Baseline: CloudModel is empty, so the model starts Unsynced and
@@ -1448,7 +1487,7 @@ fn ignores_shared_default_profile_created_from_cloud() {
     App::test((), |mut app| async move {
         install_singletons(&mut app, AuthStateProvider::new_for_test());
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
 
         profile_model.read(&app, |model, ctx| {
@@ -1490,7 +1529,7 @@ fn ignores_shared_default_profile_after_initial_load() {
     App::test((), |mut app| async move {
         install_singletons(&mut app, AuthStateProvider::new_for_test());
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
 
         let attacker_sync_id = SyncId::ServerId(ServerId::from(31338));
@@ -1525,7 +1564,7 @@ fn filters_non_owned_non_default_profile_from_list() {
     App::test((), |mut app| async move {
         install_singletons(&mut app, AuthStateProvider::new_for_test());
         let profile_model = app.add_singleton_model(|ctx| {
-            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+            new_cloud_profile_model(&LaunchMode::new_for_unit_test(), ctx)
         });
 
         // Create a non-default profile owned by an attacker, shared with victim

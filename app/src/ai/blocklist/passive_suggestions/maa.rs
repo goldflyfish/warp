@@ -182,17 +182,45 @@ impl PassiveSuggestionsModel {
         // Capture before the call — `Some` means there's a real conversation
         // the user can continue in; `None` means ephemeral.
         let continuable_conversation_id = followup_conversation_id;
-        let Ok((conversation_id, request_params)) =
-            self.ai_controller.update(ctx, |controller, ctx| {
-                controller.build_passive_suggestions_request_params(
-                    followup_conversation_id,
-                    trigger.clone(),
-                    supported_tools,
-                    ctx,
-                )
-            })
-        else {
-            return;
+        #[cfg(windows)]
+        let native_context = if warp_core::mywarp::enabled() {
+            let history = BlocklistAIHistoryModel::as_ref(ctx);
+            let conversation = followup_conversation_id.and_then(|id| history.conversation(&id));
+            let previous_query = conversation
+                .and_then(|c| c.latest_user_query())
+                .unwrap_or_default();
+            let previous_answer = conversation
+                .and_then(|c| c.latest_exchange())
+                .map(|exchange| exchange.format_output_for_copy(None))
+                .unwrap_or_default();
+            Some(serde_json::json!({
+                "trigger":trigger,
+                "previous_query":previous_query,
+                "previous_answer":previous_answer,
+                "allow_prompt":supported_tools.contains(&warp_multi_agent_api::ToolType::SuggestPrompt),
+                "allow_edits":supported_tools.contains(&warp_multi_agent_api::ToolType::ApplyFileDiffs),
+            }))
+        } else {
+            None
+        };
+        let native = cfg!(windows) && warp_core::mywarp::enabled();
+        let (conversation_id, request_params) = if native {
+            (followup_conversation_id.unwrap_or_default(), None)
+        } else {
+            let Ok((conversation_id, request_params)) =
+                self.ai_controller.update(ctx, |controller, ctx| {
+                    controller.build_passive_suggestions_request_params(
+                        followup_conversation_id,
+                        trigger.clone(),
+                        supported_tools,
+                        ctx,
+                    )
+                })
+            else {
+                return;
+            };
+
+            (conversation_id, Some(request_params))
         };
 
         let server_api = ServerApiProvider::as_ref(ctx).get();
@@ -204,9 +232,16 @@ impl PassiveSuggestionsModel {
 
         let stream_handle = ctx.spawn(
             async move {
+                #[cfg(windows)]
+                if let Some(context) = native_context {
+                    return match generate_provider_suggestion(context).await {
+                        Ok(suggestion) => suggestion.map(|suggestion| StreamExtractionResult { suggestion, server_request_token:None }),
+                        Err(error) => { log::warn!("MyWarp background suggestion failed: {error}"); None }
+                    };
+                }
                 let stream_result = generate_multi_agent_output(
                     server_api,
-                    request_params,
+                    request_params.expect("Warp suggestion parameters"),
                     team_scope,
                     cancellation_rx,
                 )
@@ -220,7 +255,7 @@ impl PassiveSuggestionsModel {
                 if latest_request.conversation_id != conversation_id {
                     return;
                 }
-                if !me.is_suggestion_still_valid(ctx) {
+                if !me.is_suggestion_still_valid(ctx) || !AISettings::as_ref(ctx).is_active_ai_enabled(ctx) {
                     return;
                 }
                 let Some(extracted) = result else {
@@ -243,7 +278,7 @@ impl PassiveSuggestionsModel {
                         label,
                         is_trigger_irrelevant,
                     } => {
-                        if prompt.is_empty() {
+                        if prompt.is_empty() || !is_prompt_suggestions_enabled(ctx) {
                             return;
                         }
                         let trigger = if is_trigger_irrelevant {
@@ -261,12 +296,8 @@ impl PassiveSuggestionsModel {
                             server_request_token,
                         });
                     }
-                    ExtractedSuggestion::CodeDiff { apply_file_diffs } => {
-                        let AIAgentActionType::RequestFileEdits { file_edits, title } =
-                            AIAgentActionType::from(apply_file_diffs)
-                        else {
-                            unreachable!()
-                        };
+                    ExtractedSuggestion::CodeDiff { file_edits, title } => {
+                        if !is_passive_code_diffs_enabled(ctx) { return; }
 
                         let edit_format_kind = classify_edit_format(&file_edits);
                         let original_edits = file_edits_to_passive_diffs(&file_edits);
@@ -293,6 +324,7 @@ impl PassiveSuggestionsModel {
                                 .await
                             },
                             move |me: &mut Self, applied_diffs: Result<Vec<ai::diff_validation::AIRequestedCodeDiff>, _>, ctx: &mut ModelContext<Self>| {
+                                if !me.is_suggestion_still_valid(ctx) || !is_passive_code_diffs_enabled(ctx) { return; }
                                 let Ok(applied_diffs) = applied_diffs else {
                                     log::warn!("[passive-code-diff] apply_edits failed");
                                     return;
@@ -627,7 +659,8 @@ enum ExtractedSuggestion {
         is_trigger_irrelevant: bool,
     },
     CodeDiff {
-        apply_file_diffs: warp_multi_agent_api::message::tool_call::ApplyFileDiffs,
+        file_edits: Vec<FileEdit>,
+        title: Option<String>,
     },
 }
 
@@ -705,10 +738,13 @@ async fn extract_suggestion_from_stream(
                 }
             }
             api::message::tool_call::Tool::ApplyFileDiffs(apply_file_diffs) => {
+                let AIAgentActionType::RequestFileEdits { file_edits, title } =
+                    AIAgentActionType::from(apply_file_diffs.clone())
+                else {
+                    continue;
+                };
                 return Some(StreamExtractionResult {
-                    suggestion: ExtractedSuggestion::CodeDiff {
-                        apply_file_diffs: apply_file_diffs.clone(),
-                    },
+                    suggestion: ExtractedSuggestion::CodeDiff { file_edits, title },
                     server_request_token,
                 });
             }
@@ -1000,3 +1036,85 @@ async fn read_files(
 #[cfg(all(test, feature = "local_fs"))]
 #[path = "maa_tests.rs"]
 mod tests;
+
+#[cfg(windows)]
+async fn generate_provider_suggestion(
+    context: serde_json::Value,
+) -> anyhow::Result<Option<ExtractedSuggestion>> {
+    let response: serde_json::Value = crate::server::server_api::provider_ai::generate(
+        "passive-suggestion",
+        crate::server::server_api::provider_ai::PASSIVE,
+        &context,
+    )
+    .await?;
+    parse_provider_suggestion(&context, &response)
+}
+
+#[cfg(windows)]
+fn parse_provider_suggestion(
+    context: &serde_json::Value,
+    response: &serde_json::Value,
+) -> anyhow::Result<Option<ExtractedSuggestion>> {
+    let files = context
+        .pointer("/trigger/ShellCommandCompleted/relevant_files")
+        .and_then(serde_json::Value::as_array);
+    let mut file_edits = Vec::new();
+    if context["allow_edits"] == true {
+        for edit in response["edits"].as_array().into_iter().flatten().take(8) {
+            let path = edit["file_path"].as_str().unwrap_or_default();
+            let search = edit["search"].as_str().unwrap_or_default();
+            let replace = edit["replace"].as_str().ok_or_else(|| {
+                anyhow::anyhow!("The provider returned an incomplete code suggestion")
+            })?;
+            let original = files
+                .into_iter()
+                .flatten()
+                .find(|file| file["file_name"] == path)
+                .and_then(|file| file.pointer("/content/StringContent"))
+                .and_then(serde_json::Value::as_str);
+            let Some(original) = original else {
+                anyhow::bail!(
+                    "The provider suggested a change to a file outside the supplied context."
+                );
+            };
+            if search.is_empty() || original.match_indices(search).count() != 1 {
+                anyhow::bail!(
+                    "The suggested code change does not uniquely match the original file."
+                );
+            }
+            file_edits.push(FileEdit::Edit(ParsedDiff::StrReplaceEdit {
+                file: Some(path.into()),
+                search: Some(search.into()),
+                replace: Some(replace.into()),
+            }));
+        }
+    }
+    if !file_edits.is_empty() {
+        return Ok(Some(ExtractedSuggestion::CodeDiff {
+            file_edits,
+            title: response["title"].as_str().map(str::to_owned),
+        }));
+    }
+    if context["allow_prompt"] == true
+        && let Some(prompt) = response["prompt"]
+            .as_str()
+            .filter(|text| !text.trim().is_empty())
+    {
+        return Ok(Some(ExtractedSuggestion::Prompt {
+            prompt: prompt.into(),
+            label: response["label"].as_str().map(str::to_owned),
+            is_trigger_irrelevant: false,
+        }));
+    }
+    Ok(None)
+}
+
+#[cfg(all(windows, feature = "provider-settings-check"))]
+pub(super) async fn check_provider_code_suggestion() -> anyhow::Result<()> {
+    let result = generate_provider_suggestion(serde_json::json!({"allow_prompt":true,"allow_edits":true,"trigger":{"ShellCommandCompleted":{"relevant_files":[{"file_name":"fixture.rs","content":{"StringContent":"before"}}]}}})).await?;
+    anyhow::ensure!(
+        matches!(result, Some(ExtractedSuggestion::CodeDiff { .. })),
+        "Passive code generation did not return a validated edit"
+    );
+    Ok(())
+}

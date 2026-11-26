@@ -128,3 +128,64 @@ fn request_carries_trace_link_header_on_warp_header_path() {
     let value = value.expect("trace-link header should be added on the warp-header path");
     assert!(value.starts_with("00-"), "unexpected header value: {value}");
 }
+
+#[test]
+fn mywarp_blocks_warp_before_request_hooks_or_network_io() {
+    let mut client = Client::from_client_builder(
+        reqwest::Client::builder().proxy(reqwest::Proxy::all("http://127.0.0.1:1").unwrap()),
+    )
+    .unwrap();
+    client.set_before_request_fn(Box::new(|_, _| {
+        panic!("blocked request must not reach transport hooks")
+    }));
+
+    let response =
+        futures::executor::block_on(client.get("https://app.warp.dev/graphql/v2").send()).unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(
+        futures::executor::block_on(response.text())
+            .unwrap()
+            .contains("Warp services are disabled")
+    );
+}
+
+#[test]
+fn mywarp_blocks_warp_streaming_requests_without_connecting() {
+    let client = Client::new();
+    let mut events = client
+        .get("https://rtc.app.warp.dev/api/v1/agent/events/stream")
+        .eventsource();
+
+    let event = futures::executor::block_on(events.next()).unwrap();
+
+    assert!(matches!(
+        event,
+        Err(reqwest_eventsource::Error::InvalidStatusCode(
+            StatusCode::FORBIDDEN,
+            _
+        ))
+    ));
+    assert!(futures::executor::block_on(events.next()).is_none());
+}
+
+#[test]
+fn mywarp_allows_local_provider_requests_but_rejects_redirects_to_warp() {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = [0; 4096];
+        let received = socket.read(&mut request).unwrap();
+        assert!(received > 0);
+        socket.write_all(b"HTTP/1.1 302 Found\r\nLocation: https://app.warp.dev/login\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    });
+    let client = Client::new_external();
+
+    let response =
+        futures::executor::block_on(client.get(format!("http://{address}/provider")).send());
+
+    assert!(response.err().unwrap().is_redirect());
+    server.join().unwrap();
+}

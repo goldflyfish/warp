@@ -44,8 +44,11 @@ impl ChannelState {
             config: ChannelConfig {
                 app_id,
                 logfile_name: "".into(),
-                server_config: WarpServerConfig::production(),
-                oz_config: OzConfig::production(),
+                server_config: WarpServerConfig::offline(),
+                oz_config: OzConfig {
+                    oz_root_url: "http://127.0.0.1:0".into(),
+                    workload_audience_url: None,
+                },
                 telemetry_config: None,
                 autoupdate_config: None,
                 crash_reporting_config: None,
@@ -62,6 +65,17 @@ impl ChannelState {
     }
 
     pub fn new(channel: Channel, mut config: ChannelConfig) -> Self {
+        if channel == Channel::Oss {
+            config.server_config = WarpServerConfig::offline();
+            config.oz_config = OzConfig {
+                oz_root_url: "http://127.0.0.1:0".into(),
+                workload_audience_url: None,
+            };
+            config.telemetry_config = None;
+            config.crash_reporting_config = None;
+            config.autoupdate_config = None;
+            config.mcp_static_config = None;
+        }
         if let Some(app_id) = app_id_from_bundle() {
             config.app_id = app_id;
         }

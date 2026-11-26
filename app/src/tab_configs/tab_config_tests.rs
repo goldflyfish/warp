@@ -65,7 +65,7 @@ fn test_generated_worktree_path_uses_repo_name_directory() {
 
     assert_eq!(
         repo_dir,
-        warp_core::paths::data_dir()
+        warp_core::paths::user_config_dir()
             .join("worktrees")
             .join("backend")
     );

@@ -65,14 +65,14 @@ impl AIExecutionProfileInfo {
     }
 }
 
-/// Enables file-backed profiles for every TUI build and for flagged GUI builds.
+/// Enables file-backed profiles for local-only or flagged GUI launches and every TUI.
 ///
 /// CLI and remote-server modes retain their dedicated in-memory behavior.
-fn file_backed_execution_profiles_enabled(launch_mode: &LaunchMode) -> bool {
+fn file_backed_execution_profiles_enabled(launch_mode: &LaunchMode, local_only: bool) -> bool {
     match launch_mode {
         LaunchMode::Tui { .. } => true,
         LaunchMode::App { .. } | LaunchMode::Test { .. } => {
-            FeatureFlag::FileBackedExecutionProfiles.is_enabled()
+            local_only || FeatureFlag::FileBackedExecutionProfiles.is_enabled()
         }
         LaunchMode::CommandLine { .. }
         | LaunchMode::RemoteServerProxy
@@ -94,8 +94,8 @@ enum ProfileSource {
 
 impl ProfileSource {
     /// Resolves the persistence backend for this launch.
-    fn for_launch_mode(launch_mode: &LaunchMode) -> Self {
-        if !file_backed_execution_profiles_enabled(launch_mode) {
+    fn for_launch_mode(launch_mode: &LaunchMode, local_only: bool) -> Self {
+        if !file_backed_execution_profiles_enabled(launch_mode, local_only) {
             return Self::LegacyCloudObjects;
         }
 
@@ -223,6 +223,7 @@ impl DefaultProfileState {
 }
 
 pub struct AIExecutionProfilesModel {
+    local_only: bool,
     /// Authoritative persistence backend selected for this launch.
     source: ProfileSource,
     /// State of the one-time import into the settings collection.
@@ -255,8 +256,16 @@ pub(crate) struct SessionComputerUse {
 impl AIExecutionProfilesModel {
     #[allow(unused_variables)]
     pub(crate) fn new(launch_mode: &LaunchMode, ctx: &mut ModelContext<Self>) -> Self {
+        Self::new_with_storage_mode(launch_mode, warp_core::mywarp::enabled(), ctx)
+    }
+
+    fn new_with_storage_mode(
+        launch_mode: &LaunchMode,
+        local_only: bool,
+        ctx: &mut ModelContext<Self>,
+    ) -> Self {
         // Resolve the persistence backend before constructing any source-specific state.
-        let source = ProfileSource::for_launch_mode(launch_mode);
+        let source = ProfileSource::for_launch_mode(launch_mode, local_only);
         let uses_file_backed_profiles = source.is_settings_collection();
         let imports_legacy_profiles = source.imports_legacy_profiles();
 
@@ -503,6 +512,7 @@ impl AIExecutionProfilesModel {
         );
 
         let mut model = Self {
+            local_only,
             source,
             settings_migration_state,
             preserve_profile_onboarding_overrides: settings_profiles_are_explicit,
@@ -526,6 +536,14 @@ impl AIExecutionProfilesModel {
             && CloudPreferencesSyncer::as_ref(ctx).has_completed_initial_load()
         {
             model.migrate_settings_profiles(ctx);
+        }
+        #[cfg(not(feature = "agent_mode_evals"))]
+        if local_only
+            && uses_file_backed_profiles
+            && model.settings_migration_state == SettingsMigrationState::PendingLegacyImport
+        {
+            let profiles = model.pending_legacy_profiles(ctx);
+            model.activate_pending_settings_collection(profiles, ctx);
         }
         model
     }
@@ -588,13 +606,14 @@ impl AIExecutionProfilesModel {
         profiles: ExecutionProfilesConfig,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
-        if AuthStateProvider::as_ref(ctx).get().user_id().is_some()
+        if !self.local_only
+            && AuthStateProvider::as_ref(ctx).get().user_id().is_some()
             && !UpdateManager::as_ref(ctx).has_completed_initial_load()
         {
             return false;
         }
 
-        if Self::cloud_collection_awaiting_reconciliation(ctx) {
+        if !self.local_only && Self::cloud_collection_awaiting_reconciliation(ctx) {
             return false;
         }
         let update_result = AISettings::handle(ctx).update(ctx, |settings, ctx| {
@@ -602,7 +621,11 @@ impl AIExecutionProfilesModel {
         });
         match update_result {
             Ok(()) => {
-                self.settings_migration_state = SettingsMigrationState::PendingExplicitSync;
+                self.settings_migration_state = if self.local_only {
+                    SettingsMigrationState::Complete
+                } else {
+                    SettingsMigrationState::PendingExplicitSync
+                };
                 self.preserve_profile_onboarding_overrides = true;
                 true
             }
@@ -1470,6 +1493,27 @@ impl AIExecutionProfilesModel {
                 setting_value: format!("{read_files:?}"),
             },
             ctx
+        );
+    }
+
+    pub(crate) fn set_command_and_file_write_permissions(
+        &mut self,
+        profile_id: &ExecutionProfileId,
+        permission: ActionPermission,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.edit_profile_internal(
+            profile_id,
+            |profile| {
+                if profile.execute_commands == permission && profile.apply_code_diffs == permission
+                {
+                    return false;
+                }
+                profile.execute_commands = permission;
+                profile.apply_code_diffs = permission;
+                true
+            },
+            ctx,
         );
     }
 

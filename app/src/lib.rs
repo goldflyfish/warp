@@ -119,6 +119,8 @@ mod workspaces;
 pub mod ai_assistant;
 pub mod appearance;
 pub mod channel;
+#[cfg(windows)]
+mod configuration_watcher;
 pub mod editor;
 pub mod features;
 pub mod input_suggestions;
@@ -127,6 +129,8 @@ pub mod integration_testing;
 pub mod keyboard;
 pub mod launch_configs;
 pub mod pane_group;
+#[cfg(feature = "provider-settings-check")]
+pub mod provider_settings_check;
 pub mod resource_center;
 pub mod root_view;
 pub mod search;
@@ -1370,6 +1374,11 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
         #[cfg(enable_crash_recovery)]
         ctx.add_singleton_model(move |_ctx| crash_recovery);
 
+        #[cfg(windows)]
+        if warp_core::mywarp::enabled() {
+            ctx.add_singleton_model(configuration_watcher::ConfigurationWatcher::new);
+        }
+
         let app_state = initialize_app(
             &launch_mode,
             timer,
@@ -1968,6 +1977,9 @@ pub(crate) fn initialize_app(
     // Rewrite recognized Warp web URLs (sessions, Drive, settings, home) into local
     // intent URLs when possible so they open directly in the desktop app.
     ctx.set_before_open_url(|url_str, _ctx| {
+        if Url::parse(url_str).is_ok_and(|url| warp_core::mywarp::blocks_url(&url)) {
+            return "about:blank".to_owned();
+        }
         if let Ok(url) = Url::parse(url_str)
             && let Some(intent) = maybe_rewrite_web_url_to_intent(&url)
         {

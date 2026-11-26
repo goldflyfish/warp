@@ -186,6 +186,18 @@ impl AuthManager {
         enforce_state_validation: bool,
         ctx: &mut ModelContext<Self>,
     ) {
+        if warp_core::mywarp::enabled() {
+            return;
+        }
+        self.initialize_warp_user_from_auth_payload(auth_payload, enforce_state_validation, ctx);
+    }
+
+    fn initialize_warp_user_from_auth_payload(
+        &mut self,
+        auth_payload: AuthRedirectPayload,
+        enforce_state_validation: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
         let AuthRedirectPayload {
             refresh_token,
             user_uid,
@@ -300,6 +312,9 @@ impl AuthManager {
 
     /// Refreshes the user's auth state using their existing credentials.
     pub fn refresh_user(&self, ctx: &mut ModelContext<Self>) {
+        if warp_core::mywarp::enabled() {
+            return;
+        }
         let Some(credentials) = self.auth_state.credentials() else {
             log::warn!("Attempted to refresh user without credentials");
             return;
@@ -670,6 +685,10 @@ impl AuthManager {
         referral_code: Option<String>,
         ctx: &mut ModelContext<Self>,
     ) {
+        if warp_core::mywarp::enabled() {
+            ctx.emit(AuthManagerEvent::SkippedLogin);
+            return;
+        }
         let anonymous_user_type = AnonymousUserType::NativeClientAnonymousUserFeatureGated;
 
         let auth_client = self.auth_client.clone();
@@ -733,6 +752,9 @@ impl AuthManager {
         auth_view_variant: AuthViewVariant,
         ctx: &mut ModelContext<Self>,
     ) {
+        if warp_core::mywarp::enabled() {
+            return;
+        }
         if self.auth_state.is_anonymous_or_logged_out() {
             send_telemetry_from_ctx!(
                 TelemetryEvent::AnonymousUserAttemptLoginGatedFeature { feature },
